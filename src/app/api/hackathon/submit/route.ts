@@ -2,7 +2,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
 import { evaluate, type Check } from "@/engine/checks";
 import { Network } from "@/engine/network";
-import { adminApp, adminAuth, adminDb } from "@/lib/firebaseAdmin";
+import { adminApp, adminDb, verifyIdToken } from "@/lib/firebaseAdmin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +21,7 @@ export async function POST(req: Request) {
   if (!token) return NextResponse.json({ error: "Connectez-vous pour participer." }, { status: 401 });
   let uid: string;
   try {
-    uid = (await adminAuth().verifyIdToken(token)).uid;
+    uid = await verifyIdToken(token);
   } catch {
     return NextResponse.json({ error: "Session expirée, reconnectez-vous." }, { status: 401 });
   }
