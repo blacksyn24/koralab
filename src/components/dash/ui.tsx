@@ -32,7 +32,7 @@ export function StatCard({ label, value, hint, href, highlight }: { label: strin
   const body = (
     <div
       className={`group relative h-full overflow-hidden rounded-3xl p-5 ring-1 transition ${
-        highlight ? "bg-gradient-to-br from-kora-400 via-kora-500 to-ink-800 ring-kora-300/40 shadow-xl shadow-kora-500/20" : "bg-ink-900/70 ring-white/8 hover:ring-white/20"
+        highlight ? "bg-gradient-to-br from-kora-300 via-kora-500 to-[#0051d5] ring-kora-300/40 shadow-xl shadow-kora-500/20" : "bg-ink-900/70 ring-white/8 hover:ring-white/20"
       }`}
     >
       <div className="flex items-start justify-between gap-2">
@@ -103,8 +103,8 @@ export function Gauge({ parts, caption }: { parts: { label: string; value: numbe
       <svg viewBox="0 0 220 125" className="mt-2 w-full max-w-64">
         <defs>
           <pattern id="gauge-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-            <rect width="6" height="6" fill="rgb(175 197 248 / .08)" />
-            <line x1="0" y1="0" x2="0" y2="6" stroke="rgb(175 197 248 / .35)" strokeWidth="2" />
+            <rect width="6" height="6" fill="rgb(170 170 170 / .08)" />
+            <line x1="0" y1="0" x2="0" y2="6" stroke="rgb(170 170 170 / .35)" strokeWidth="2" />
           </pattern>
         </defs>
         <path d={arc} pathLength={100} fill="none" stroke="url(#gauge-hatch)" strokeWidth="30" />

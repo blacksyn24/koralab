@@ -13,7 +13,7 @@ const features = [
 
 export default function Home() {
   return (
-    <main className="min-h-dvh bg-[radial-gradient(900px_600px_at_20%_0%,rgb(46_93_230/.35),transparent_70%),radial-gradient(700px_500px_at_100%_40%,rgb(110_146_242/.18),transparent_70%)]">
+    <main className="min-h-dvh bg-[radial-gradient(900px_600px_at_20%_0%,rgb(0_122_255/.35),transparent_70%),radial-gradient(700px_500px_at_100%_40%,rgb(77_163_255/.18),transparent_70%)]">
       <nav className="mx-auto flex max-w-6xl items-center justify-between px-5 py-5">
         <span className="flex items-center gap-2 text-lg font-bold">
           <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-kora-300 to-kora-500">K</span>
@@ -53,14 +53,14 @@ export default function Home() {
           </Link>
         </div>
 
-        <div className="mx-auto mt-14 max-w-3xl overflow-hidden rounded-2xl bg-[#03061a] text-left shadow-2xl ring-1 ring-white/10">
+        <div className="mx-auto mt-14 max-w-3xl overflow-hidden rounded-2xl bg-[#0a0a0b] text-left shadow-2xl ring-1 ring-white/10">
           <div className="flex gap-1.5 border-b border-white/8 bg-ink-900 px-4 py-2.5">
             <span className="h-3 w-3 rounded-full bg-ko/80" />
             <span className="h-3 w-3 rounded-full bg-amber-400/80" />
             <span className="h-3 w-3 rounded-full bg-ok/80" />
             <span className="ml-3 text-xs text-kora-200/60">R1 — console</span>
           </div>
-          <pre className="term p-5 text-[#d6e2ff]">{`R1>enable
+          <pre className="term p-5 text-[#e5e5ea]">{`R1>enable
 R1#conf t
 R1(config)#int g0/0/0
 R1(config-if)#ip add 192.168.1.1 255.255.255.0

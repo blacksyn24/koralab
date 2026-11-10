@@ -125,7 +125,7 @@ export default function AdminHome({ demo }: { demo?: AdminData }) {
               <div className="mt-2 origin-left scale-90">
                 <Countdown to={statusOf(focus) === "live" ? focus.endAt : focus.startAt} />
               </div>
-              <Link href={`/admin/hackathons/suivi?id=${focus.id}`} className="mt-auto flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-kora-500 to-ink-800 py-2.5 text-sm font-semibold text-white ring-1 ring-kora-300/30 hover:from-kora-400">
+              <Link href={`/admin/hackathons/suivi?id=${focus.id}`} className="mt-auto flex items-center justify-center gap-2 rounded-full bg-kora-500 py-2.5 text-sm font-semibold text-white hover:bg-kora-400">
                 <Radio size={15} /> Suivi en direct
               </Link>
             </>
@@ -191,8 +191,8 @@ export default function AdminHome({ demo }: { demo?: AdminData }) {
           />
         </Card>
 
-        <section className="relative overflow-hidden rounded-3xl bg-[#03061a] p-5 ring-1 ring-white/10">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(220px_160px_at_100%_100%,rgb(46_93_230/.5),transparent),repeating-radial-gradient(circle_at_100%_100%,transparent_0_12px,rgb(110_146_242/.09)_12px_13px)]" />
+        <section className="relative overflow-hidden rounded-3xl bg-[#0a0a0b] p-5 ring-1 ring-white/10">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(220px_160px_at_100%_100%,rgb(0_122_255/.5),transparent),repeating-radial-gradient(circle_at_100%_100%,transparent_0_12px,rgb(77_163_255/.09)_12px_13px)]" />
           <div className="relative flex h-full flex-col">
             <p className="flex items-center gap-2 font-semibold text-white">
               <DatabaseBackup size={17} /> Sauvegarde

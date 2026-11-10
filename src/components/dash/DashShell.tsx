@@ -182,8 +182,8 @@ function QuickSearch({ items }: { items: SearchItem[] }) {
 /** Carte sombre en bas de la barre latérale (comme « Download our app » sur la maquette). */
 export function PromoCard({ title, text, href, cta }: { title: string; text: string; href: string; cta: string }) {
   return (
-    <div className="relative overflow-hidden rounded-2xl bg-[#03061a] p-4 ring-1 ring-white/10">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(160px_120px_at_100%_100%,rgb(46_93_230/.55),transparent),repeating-radial-gradient(circle_at_100%_100%,transparent_0_10px,rgb(110_146_242/.10)_10px_11px)]" />
+    <div className="relative overflow-hidden rounded-2xl bg-[#0a0a0b] p-4 ring-1 ring-white/10">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(160px_120px_at_100%_100%,rgb(0_122_255/.55),transparent),repeating-radial-gradient(circle_at_100%_100%,transparent_0_10px,rgb(77_163_255/.10)_10px_11px)]" />
       <div className="relative">
         <span className="grid h-8 w-8 place-items-center rounded-full bg-white/10 text-sm font-bold">K</span>
         <p className="mt-3 font-semibold leading-snug text-white">{title}</p>

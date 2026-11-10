@@ -80,7 +80,7 @@ function HackathonView() {
 
       <section className="mx-auto max-w-6xl px-4 py-8">
         {/* Bandeau */}
-        <div className="rounded-3xl bg-[radial-gradient(700px_300px_at_0%_0%,rgb(46_93_230/.45),transparent_70%)] p-6 ring-1 ring-white/10 sm:p-8">
+        <div className="rounded-3xl bg-[radial-gradient(700px_300px_at_0%_0%,rgb(0_122_255/.45),transparent_70%)] p-6 ring-1 ring-white/10 sm:p-8">
           <span
             className={`rounded-full px-3 py-1 text-xs font-semibold ${status === "live" ? "bg-ok/20 text-ok" : status === "upcoming" ? "bg-amber-400/15 text-amber-300" : "bg-white/8 text-kora-200/70"}`}
           >

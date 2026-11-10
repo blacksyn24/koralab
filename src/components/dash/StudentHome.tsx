@@ -141,7 +141,7 @@ export default function StudentHome({ demo }: { demo?: StudentData }) {
               <div className="mt-2 scale-90 origin-left">
                 <Countdown to={statusOf(next) === "live" ? next.endAt : next.startAt} />
               </div>
-              <Link href={`/hackathon?id=${next.id}`} className="mt-auto flex items-center justify-center gap-2 rounded-full bg-gradient-to-r from-kora-500 to-ink-800 py-2.5 text-sm font-semibold text-white ring-1 ring-kora-300/30 hover:from-kora-400">
+              <Link href={`/hackathon?id=${next.id}`} className="mt-auto flex items-center justify-center gap-2 rounded-full bg-kora-500 py-2.5 text-sm font-semibold text-white hover:bg-kora-400">
                 <Play size={15} /> {joinedNext ? (statusOf(next) === "live" ? "Continuer" : "Voir le hackathon") : "S'inscrire"}
               </Link>
             </>
@@ -219,8 +219,8 @@ export default function StudentHome({ demo }: { demo?: StudentData }) {
         </Card>
 
         {/* Niveau */}
-        <section className="relative overflow-hidden rounded-3xl bg-[#03061a] p-5 ring-1 ring-white/10">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(220px_160px_at_100%_100%,rgb(46_93_230/.5),transparent),repeating-radial-gradient(circle_at_100%_100%,transparent_0_12px,rgb(110_146_242/.09)_12px_13px)]" />
+        <section className="relative overflow-hidden rounded-3xl bg-[#0a0a0b] p-5 ring-1 ring-white/10">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(220px_160px_at_100%_100%,rgb(0_122_255/.5),transparent),repeating-radial-gradient(circle_at_100%_100%,transparent_0_12px,rgb(77_163_255/.09)_12px_13px)]" />
           <div className="relative flex h-full flex-col">
             <p className="font-semibold text-white">Mon niveau</p>
             <p className="mt-3 text-3xl font-bold tracking-tight text-white">{lvl.name}</p>

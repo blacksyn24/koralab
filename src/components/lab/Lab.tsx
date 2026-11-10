@@ -564,7 +564,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
               maxZoom={2}
               proOptions={{ hideAttribution: true }}
             >
-              <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="#26336b" />
+              <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="#3a3a3c" />
               <Controls showInteractive={false} position="bottom-right" />
             </ReactFlow>
             {tool === "cable" && (
@@ -584,7 +584,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
 
           {/* Consoles */}
           {open.length > 0 && activeDev && (
-            <section className="flex h-[44vh] min-h-[220px] flex-col border-t border-white/10 bg-[#03061a]">
+            <section className="flex h-[44vh] min-h-[220px] flex-col border-t border-white/10 bg-[#0a0a0b]">
               <div className="flex items-center gap-1 overflow-x-auto border-b border-white/8 bg-ink-900 px-2 pt-1.5">
                 {open.map((id) => {
                   const d = net.getDevice(id);
@@ -592,7 +592,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
                   return (
                     <div
                       key={id}
-                      className={`flex items-center gap-2 rounded-t-lg px-3 py-1.5 text-sm ${id === active ? "bg-[#03061a] text-white" : "text-kora-200/70 hover:text-white"}`}
+                      className={`flex items-center gap-2 rounded-t-lg px-3 py-1.5 text-sm ${id === active ? "bg-[#0a0a0b] text-white" : "text-kora-200/70 hover:text-white"}`}
                     >
                       <button onClick={() => setActive(id)}>{d.hostname}</button>
                       <button aria-label={`Fermer ${d.hostname}`} onClick={() => closeConsole(id)} className="opacity-60 hover:opacity-100">

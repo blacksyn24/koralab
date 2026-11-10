@@ -23,7 +23,7 @@ export function LinkEdge({ id, sourceX, sourceY, targetX, targetY, data, selecte
   );
   return (
     <>
-      <BaseEdge id={id} path={path} style={{ stroke: selected ? "#fbbf24" : both ? "#6e92f2" : "#475569", strokeWidth: selected ? 3 : 2.2 }} />
+      <BaseEdge id={id} path={path} style={{ stroke: selected ? "#fbbf24" : both ? "#4da3ff" : "#475569", strokeWidth: selected ? 3 : 2.2 }} />
       <EdgeLabelRenderer>
         {label(a, d.aLabel, d.aUp)}
         {label(b, d.bLabel, d.bUp)}

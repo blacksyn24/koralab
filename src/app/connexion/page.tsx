@@ -88,7 +88,7 @@ function ConnexionForm() {
   };
 
   return (
-    <main className="grid min-h-dvh place-items-center bg-[radial-gradient(900px_600px_at_20%_0%,rgb(46_93_230/.35),transparent_70%)] px-4 py-10">
+    <main className="grid min-h-dvh place-items-center bg-[radial-gradient(900px_600px_at_20%_0%,rgb(0_122_255/.35),transparent_70%)] px-4 py-10">
       <div className="w-full max-w-md">
         <Link href="/" className="mb-6 flex items-center justify-center gap-2 text-lg font-bold">
           <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-kora-300 to-kora-500">K</span>
