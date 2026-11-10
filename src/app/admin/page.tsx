@@ -1,15 +1,34 @@
 "use client";
 
-import { BookOpen, FlaskConical, GraduationCap, Loader2, UserPlus, Users } from "lucide-react";
+import { BookOpen, DatabaseBackup, FlaskConical, GraduationCap, Loader2, UserPlus, Users } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { countLabs, listAllTps, listUsers, type Tp, type UserRow } from "@/lib/tps";
+import { countLabs, exportBackup, listAllTps, listUsers, type Tp, type UserRow } from "@/lib/tps";
 
 export default function AdminHome() {
   const [users, setUsers] = useState<UserRow[] | null>(null);
   const [labs, setLabs] = useState(0);
   const [tps, setTps] = useState<Tp[]>([]);
   const [error, setError] = useState("");
+  const [backingUp, setBackingUp] = useState(false);
+
+  /** Télécharge une copie de toutes les données (à faire régulièrement). */
+  const backup = async () => {
+    setBackingUp(true);
+    try {
+      const blob = new Blob([await exportBackup()], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `koralab-sauvegarde-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      console.error(e);
+      setError("Sauvegarde impossible pour le moment.");
+    } finally {
+      setBackingUp(false);
+    }
+  };
 
   useEffect(() => {
     Promise.all([listUsers(), countLabs(), listAllTps()])
@@ -34,7 +53,12 @@ export default function AdminHome() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <h1 className="text-2xl font-bold">Vue d&apos;ensemble</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold">Vue d&apos;ensemble</h1>
+        <button onClick={backup} disabled={backingUp} className="flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-kora-200 ring-1 ring-white/10 hover:text-white disabled:opacity-60" title="Télécharger une copie des comptes, labs et TP">
+          {backingUp ? <Loader2 size={16} className="animate-spin" /> : <DatabaseBackup size={16} />} Sauvegarder les données
+        </button>
+      </div>
       {error && <p className="mt-4 rounded-xl bg-ko/10 px-4 py-3 text-sm text-ko">{error}</p>}
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         {stats.map((s) => (

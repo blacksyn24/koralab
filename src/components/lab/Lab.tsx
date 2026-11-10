@@ -117,6 +117,9 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
   const { user } = useAuth();
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
   const skipFirstSave = useRef(true);
+  /** Dernier contenu enregistré en ligne et contenu en attente : évite les écritures inutiles (quota Firebase). */
+  const lastSaved = useRef<string | null>(null);
+  const pending = useRef<string | null>(null);
   const netRef = useRef<Network | null>(null);
   const [ready, setReady] = useState(false);
   const [ver, setVer] = useState(0);
@@ -181,20 +184,47 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
     }
     if (skipFirstSave.current) {
       skipFirstSave.current = false;
+      lastSaved.current = json;
       return;
     }
+    if (json === lastSaved.current) return; // rien n'a changé : aucune écriture
+    pending.current = json;
     setSaveState("saving");
-    const t = window.setTimeout(() => {
-      cloud
-        .save(json)
-        .then(() => setSaveState("saved"))
-        .catch((e) => {
-          console.error("[lab] sauvegarde en ligne impossible", e);
-          setSaveState("error");
-        });
-    }, 1200);
+    // On attend 5 s sans modification avant d'écrire : une écriture par « pause », pas par commande
+    const t = window.setTimeout(() => flushSave(), 5000);
     return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ver, net, cloud]);
+
+  const flushSave = useCallback(() => {
+    const json = pending.current;
+    if (!cloud || !json || json === lastSaved.current) return;
+    pending.current = null;
+    cloud
+      .save(json)
+      .then(() => {
+        lastSaved.current = json;
+        setSaveState("saved");
+      })
+      .catch((e) => {
+        console.error("[lab] sauvegarde en ligne impossible", e);
+        pending.current = json;
+        setSaveState("error");
+      });
+  }, [cloud]);
+
+  // Enregistre tout de suite si l'étudiant quitte la page ou change d'onglet
+  useEffect(() => {
+    if (!cloud) return;
+    const onHide = () => document.visibilityState === "hidden" && flushSave();
+    window.addEventListener("pagehide", flushSave);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      flushSave();
+      window.removeEventListener("pagehide", flushSave);
+      document.removeEventListener("visibilitychange", onHide);
+    };
+  }, [cloud, flushSave]);
 
   /** Mode TP : teste les critères sur la topologie de l'étudiant. */
   const check = () => {

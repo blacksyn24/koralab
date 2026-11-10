@@ -1,5 +1,6 @@
 import { ArrowRight, Boxes, Download, GraduationCap, Laptop, Terminal, Wifi } from "lucide-react";
 import Link from "next/link";
+import { SiteFooter } from "@/components/LegalPage";
 
 const features = [
   { icon: Laptop, title: "Rien à installer", text: "Un navigateur suffit, même sur un petit PC. Pas d'images IOS à chercher, pas de machine virtuelle." },
@@ -79,10 +80,7 @@ Success rate is 80 percent (4/5)`}</pre>
         ))}
       </section>
 
-      <footer className="border-t border-white/8 px-5 py-6 text-center text-xs text-kora-200/50">
-        KoraLab — projet étudiant créé au Bénin par Urbain Sedami LANDJIDE. KoraLab simule des commandes de style Cisco IOS à des fins pédagogiques et n&apos;est
-        affilié à aucun constructeur. Cisco et IOS sont des marques de leurs propriétaires respectifs.
-      </footer>
+      <SiteFooter />
     </main>
   );
 }

@@ -145,3 +145,16 @@ export async function countLabs(): Promise<number> {
   return (await getDocs(collection(db, "labs"))).size;
 }
 
+
+/** Sauvegarde complète (comptes, labs, TP) au format JSON, pour l'administrateur. */
+export async function exportBackup(): Promise<string> {
+  const plain = (v: unknown): unknown => {
+    if (v && typeof v === "object" && "toDate" in (v as object)) return (v as Timestamp).toDate().toISOString();
+    if (Array.isArray(v)) return v.map(plain);
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x)]));
+    return v;
+  };
+  const dump = async (name: string) => (await getDocs(collection(db, name))).docs.map((d) => ({ id: d.id, ...(plain(d.data()) as object) }));
+  const [users, labs, tps] = await Promise.all([dump("users"), dump("labs"), dump("tps")]);
+  return JSON.stringify({ exportedAt: new Date().toISOString(), users, labs, tps }, null, 2);
+}

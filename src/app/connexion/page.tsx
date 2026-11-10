@@ -137,6 +137,19 @@ function ConnexionForm() {
             </button>
           </form>
 
+          {tab === "signup" && (
+            <p className="mt-3 text-center text-xs text-kora-200/60">
+              En créant un compte, vous acceptez les{" "}
+              <Link href="/conditions" className="underline hover:text-white">
+                conditions d&apos;utilisation
+              </Link>{" "}
+              et la{" "}
+              <Link href="/confidentialite" className="underline hover:text-white">
+                politique de confidentialité
+              </Link>
+              .
+            </p>
+          )}
           {tab === "login" && (
             <button onClick={forgot} className="mt-3 w-full text-center text-sm text-kora-300 hover:text-white">
               Mot de passe oublié ?

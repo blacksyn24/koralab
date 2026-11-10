@@ -7,6 +7,17 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: { default: "KoraLab — le labo réseau en ligne", template: "%s — KoraLab" },
   description: "Simulez des routeurs, switchs et PC directement dans votre navigateur. Gratuit, sans installation, pensé pour les étudiants en réseau informatique.",
+  metadataBase: new URL("https://koralab.vercel.app"),
+  keywords: ["simulateur réseau", "CCNA", "Packet Tracer", "GNS3", "Cisco IOS", "labo réseau en ligne", "étudiant réseau", "Bénin"],
+  openGraph: {
+    title: "KoraLab — le labo réseau en ligne",
+    description: "Configurez des routeurs et des switchs dans votre navigateur. Gratuit, sans installation.",
+    url: "https://koralab.vercel.app",
+    siteName: "KoraLab",
+    locale: "fr_FR",
+    type: "website",
+  },
+  robots: { index: true, follow: true },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
