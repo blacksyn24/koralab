@@ -1,0 +1,60 @@
+rules_version = '2';
+
+// Règles de sécurité de KoraLab.
+// - Chaque étudiant ne voit et ne modifie que ses propres labs.
+// - Un étudiant ne peut pas se donner le rôle « admin » ni se débloquer lui-même.
+// - Les administrateurs (role == "admin" dans users/{uid}) gèrent les comptes et les TP.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function me() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && me().role == "admin";
+    }
+
+    function active() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && me().get("disabled", false) == false;
+    }
+
+    // Profils
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      // À la première connexion : toujours « étudiant », jamais bloqué
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.role == "student"
+        && request.resource.data.get("disabled", false) == false;
+      // L'étudiant peut mettre à jour son profil, mais pas son rôle ni son blocage
+      allow update: if isAdmin() || (signedIn() && request.auth.uid == uid
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.get("disabled", false) == resource.data.get("disabled", false));
+      allow delete: if isAdmin();
+    }
+
+    // Labs des étudiants
+    match /labs/{labId} {
+      allow read: if signedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if active()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.data is string
+        && request.resource.data.data.size() < 900000;
+      allow update: if active()
+        && resource.data.ownerId == request.auth.uid
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.data.size() < 900000;
+      allow delete: if signedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+    }
+
+    // TP guidés (étape suivante) : lecture publique des TP publiés, écriture réservée aux admins
+    match /tps/{tpId} {
+      allow read: if resource.data.get("published", false) == true || isAdmin();
+      allow write: if isAdmin();
+    }
+  }
+}

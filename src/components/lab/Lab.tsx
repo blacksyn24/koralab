@@ -13,13 +13,17 @@ import {
   type Node,
   type NodeChange,
 } from "@xyflow/react";
-import { Cable, CircleHelp, Download, FilePlus2, FlaskConical, Monitor, MousePointer2, Network as SwitchIcon, Router, Trash2, Upload, X } from "lucide-react";
+import { Cable, CircleHelp, Cloud, CloudCheck, CloudOff, Download, FilePlus2, FlaskConical, Loader2, Monitor, MousePointer2, Network as SwitchIcon, Router, Trash2, Upload, X } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IosCli } from "@/engine/cli/ios";
 import { PcCli } from "@/engine/cli/pc";
 import { isIp, isMask } from "@/engine/ip";
 import { Network, shortIf, type Device, type DeviceKind } from "@/engine/network";
+import { createLab } from "@/lib/labs";
+import { AccountMenu } from "../auth/AccountMenu";
+import { useAuth } from "../auth/AuthProvider";
 import { DeviceNode, type DeviceNodeData } from "./DeviceNode";
 import { LinkEdge, type LinkEdgeData } from "./LinkEdge";
 import { Terminal, type Shell } from "./Terminal";
@@ -55,16 +59,23 @@ function load(): Network {
   return starter();
 }
 
-export function Lab() {
+/** Lab enregistré en ligne (ouvert depuis « Mes labs »). */
+export type CloudLab = { id: string; name: string; initial: Network; save: (json: string) => Promise<void> };
+
+export function Lab({ cloud }: { cloud?: CloudLab }) {
   return (
     <ReactFlowProvider>
-      <LabInner />
+      <LabInner cloud={cloud} />
     </ReactFlowProvider>
   );
 }
 
-function LabInner() {
+function LabInner({ cloud }: { cloud?: CloudLab }) {
   const flow = useReactFlow();
+  const router = useRouter();
+  const { user } = useAuth();
+  const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
+  const skipFirstSave = useRef(true);
   const netRef = useRef<Network | null>(null);
   const [ready, setReady] = useState(false);
   const [ver, setVer] = useState(0);
@@ -80,12 +91,12 @@ function LabInner() {
   const [nodes, setNodes] = useState<Node[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  // Chargement côté navigateur uniquement (localStorage)
+  // Chargement : lab en ligne, sinon dernier lab de ce navigateur (localStorage)
   useEffect(() => {
-    netRef.current = load();
+    netRef.current = cloud?.initial ?? load();
     setReady(true);
     bump();
-  }, [bump]);
+  }, [bump, cloud]);
 
   const net = netRef.current;
 
@@ -101,15 +112,49 @@ function LabInner() {
     window.setTimeout(() => setToast(null), 3200);
   };
 
-  // Sauvegarde automatique
+  // Sauvegarde automatique : en ligne (avec un petit délai) pour un lab du compte, sinon dans le navigateur
   useEffect(() => {
     if (!net) return;
-    try {
-      localStorage.setItem(STORAGE, JSON.stringify(net.toJSON()));
-    } catch {
-      /* stockage plein ou bloqué */
+    const json = JSON.stringify(net.toJSON());
+    if (!cloud) {
+      try {
+        localStorage.setItem(STORAGE, json);
+      } catch {
+        /* stockage plein ou bloqué */
+      }
+      return;
     }
-  }, [ver, net]);
+    if (skipFirstSave.current) {
+      skipFirstSave.current = false;
+      return;
+    }
+    setSaveState("saving");
+    const t = window.setTimeout(() => {
+      cloud
+        .save(json)
+        .then(() => setSaveState("saved"))
+        .catch((e) => {
+          console.error("[lab] sauvegarde en ligne impossible", e);
+          setSaveState("error");
+        });
+    }, 1200);
+    return () => window.clearTimeout(t);
+  }, [ver, net, cloud]);
+
+  /** Copie le lab du navigateur dans le compte, puis l'ouvre en mode « en ligne ». */
+  const saveOnline = async () => {
+    if (!net) return;
+    if (!user) return router.push("/connexion?next=/lab");
+    const name = prompt("Nom du lab :", `Lab du ${new Date().toLocaleDateString("fr-FR")}`);
+    if (!name?.trim()) return;
+    try {
+      const id = await createLab(user.uid, name.trim(), JSON.stringify(net.toJSON()));
+      router.push(`/lab?id=${id}`);
+    } catch (e) {
+      console.error(e);
+      notify("Enregistrement impossible pour le moment. Réessayez.");
+    }
+  };
 
   // Nœuds du canevas (on garde l'état de sélection de React Flow)
   useEffect(() => {
@@ -272,12 +317,26 @@ function LabInner() {
           KoraLab
         </Link>
         <span className="hidden rounded-full bg-amber-400/15 px-2 py-0.5 text-[11px] font-semibold text-amber-300 sm:inline">BÊTA</span>
+        {cloud ? (
+          <span className="ml-2 flex min-w-0 items-center gap-2 text-sm">
+            <span className="truncate font-semibold text-white">{cloud.name}</span>
+            <span className={`flex shrink-0 items-center gap-1 text-xs ${saveState === "error" ? "text-ko" : "text-kora-200/60"}`}>
+              {saveState === "saving" ? <Loader2 size={13} className="animate-spin" /> : saveState === "error" ? <CloudOff size={13} /> : <CloudCheck size={13} />}
+              <span className="hidden sm:inline">{saveState === "saving" ? "Enregistrement…" : saveState === "error" ? "Non enregistré" : "Enregistré en ligne"}</span>
+            </span>
+          </span>
+        ) : (
+          <button onClick={saveOnline} className="ml-2 flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm text-kora-300 ring-1 ring-kora-300/30 hover:bg-white/8 hover:text-white">
+            <Cloud size={15} /> <span className="hidden sm:inline">Enregistrer en ligne</span>
+          </button>
+        )}
         <div className="ml-auto flex flex-wrap items-center gap-1.5 text-sm">
           <TopButton icon={FilePlus2} label="Nouveau" onClick={() => confirm("Effacer le lab actuel et repartir de zéro ?") && resetLab(new Network())} />
           <TopButton icon={FlaskConical} label="TP 01" title="Charger la topologie de départ du TP 01" onClick={() => confirm("Remplacer le lab actuel par la topologie du TP 01 ?") && resetLab(starter())} />
           <TopButton icon={Download} label="Exporter" onClick={exportLab} />
           <TopButton icon={Upload} label="Importer" onClick={() => fileInput.current?.click()} />
           <TopButton icon={CircleHelp} label="Aide" onClick={() => setHelp(true)} />
+          <AccountMenu />
           <input ref={fileInput} type="file" accept="application/json,.json" hidden onChange={(e) => (e.target.files?.[0] && importLab(e.target.files[0]), (e.target.value = ""))} />
         </div>
       </header>
@@ -373,7 +432,7 @@ function LabInner() {
       </div>
 
       <footer className="border-t border-white/8 bg-ink-900/80 px-4 py-1.5 text-center text-[11px] text-kora-200/50">
-        KoraLab simule des commandes de style Cisco IOS à des fins pédagogiques. KoraLab n&apos;est affilié à aucun constructeur. Votre lab est enregistré dans ce navigateur.
+        KoraLab simule des commandes de style Cisco IOS à des fins pédagogiques. KoraLab n&apos;est affilié à aucun constructeur. {cloud ? "Votre lab est enregistré dans votre compte." : "Votre lab est enregistré dans ce navigateur."}
       </footer>
 
       {help && <HelpDialog onClose={() => setHelp(false)} />}

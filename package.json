@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@xyflow/react": "^12.12.1",
+    "firebase": "^13.2.0",
     "geist": "^1.9.2",
     "lucide-react": "^1.71.0",
     "next": "^15.5.29",
