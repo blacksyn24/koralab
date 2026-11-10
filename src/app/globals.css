@@ -1,0 +1,61 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+@theme {
+  --color-ink-950: #060b26;
+  --color-ink-900: #0b1640;
+  --color-ink-800: #12205a;
+  --color-kora-500: #2e5de6;
+  --color-kora-400: #4f7cf0;
+  --color-kora-300: #6e92f2;
+  --color-kora-200: #afc5f8;
+  --color-kora-50: #e6edfd;
+  --color-ok: #34d399;
+  --color-ko: #f87171;
+  --font-sans: var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--color-ink-950);
+  color: var(--color-kora-50);
+}
+
+/* Canevas de topologie */
+.react-flow__attribution {
+  display: none;
+}
+.react-flow__handle {
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.react-flow__edge-textbg {
+  fill: var(--color-ink-900);
+}
+.react-flow__controls button {
+  background: var(--color-ink-900);
+  border-color: rgb(255 255 255 / 0.08);
+  fill: var(--color-kora-200);
+}
+.react-flow__controls button:hover {
+  background: var(--color-ink-800);
+}
+
+/* Terminal */
+.term {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
