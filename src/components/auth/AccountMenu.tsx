@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, FolderOpen, LogIn, LogOut, ShieldCheck, Trophy } from "lucide-react";
+import { BookOpen, FolderOpen, LayoutDashboard, LogIn, LogOut, ShieldCheck, Trophy } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "./AuthProvider";
@@ -45,6 +45,9 @@ export function AccountMenu() {
             <p className="truncate text-xs text-kora-200/60">{user.email}</p>
             {isAdmin && <span className="mt-1 inline-block rounded-full bg-amber-400/15 px-2 py-0.5 text-[11px] font-semibold text-amber-300">Administrateur</span>}
           </div>
+          <Link href="/tableau-de-bord" className="flex items-center gap-2 px-4 py-2.5 hover:bg-white/8" onClick={() => setOpen(false)}>
+            <LayoutDashboard size={15} /> Tableau de bord
+          </Link>
           <Link href="/mes-labs" className="flex items-center gap-2 px-4 py-2.5 hover:bg-white/8" onClick={() => setOpen(false)}>
             <FolderOpen size={15} /> Mes labs
           </Link>

@@ -160,3 +160,24 @@ export function leaderboardCsv(h: Hackathon, list: Participant[]): string {
   const rows = rank(list).map((p, i) => [i + 1, p.name, p.score, ...h.challenges.map((c) => p.solved[c.id] ?? 0), p.lastScoreAt?.toISOString() ?? ""]);
   return [head, ...rows].map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(";")).join("\n");
 }
+
+/** Hackathons auxquels un étudiant est inscrit, avec son score et son rang (tableau de bord). */
+export type MyHackathon = { h: Hackathon; me: Participant; rank: number; total: number };
+
+export async function myHackathons(uid: string, list?: Hackathon[]): Promise<MyHackathon[]> {
+  const hks = list ?? (await listPublishedHackathons());
+  const out = await Promise.all(
+    hks.map(async (h) => {
+      const me = await getParticipant(h.id, uid).catch(() => null);
+      if (!me) return null;
+      const all = rank((await getDocs(collection(db, "hackathons", h.id, "participants"))).docs.map((d) => toParticipant(d.id, d.data())));
+      return { h, me, rank: all.findIndex((p) => p.uid === uid) + 1, total: all.length };
+    })
+  );
+  return out.filter((x): x is MyHackathon => !!x);
+}
+
+/** Retire l'inscription d'un étudiant (utilisé à la suppression de son compte). */
+export async function leaveHackathon(hid: string, uid: string) {
+  await deleteDoc(doc(db, "hackathons", hid, "participants", uid));
+}

@@ -38,7 +38,7 @@ function message(e: unknown): string {
 
 function ConnexionForm() {
   const router = useRouter();
-  const next = useSearchParams().get("next") || "/mes-labs";
+  const next = useSearchParams().get("next") || "/tableau-de-bord";
   const { user, loading } = useAuth();
   const [tab, setTab] = useState<"login" | "signup">("login");
   const [name, setName] = useState("");
