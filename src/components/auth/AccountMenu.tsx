@@ -1,6 +1,6 @@
 "use client";
 
-import { FolderOpen, LogIn, LogOut, ShieldCheck } from "lucide-react";
+import { BookOpen, FolderOpen, LogIn, LogOut, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "./AuthProvider";
@@ -47,6 +47,9 @@ export function AccountMenu() {
           </div>
           <Link href="/mes-labs" className="flex items-center gap-2 px-4 py-2.5 hover:bg-white/8" onClick={() => setOpen(false)}>
             <FolderOpen size={15} /> Mes labs
+          </Link>
+          <Link href="/tps" className="flex items-center gap-2 px-4 py-2.5 hover:bg-white/8" onClick={() => setOpen(false)}>
+            <BookOpen size={15} /> TP guidés
           </Link>
           {isAdmin && (
             <Link href="/admin" className="flex items-center gap-2 px-4 py-2.5 hover:bg-white/8" onClick={() => setOpen(false)}>

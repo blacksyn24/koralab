@@ -20,6 +20,9 @@ export default function Home() {
           <span className="rounded-full bg-amber-400/15 px-2 py-0.5 text-[11px] font-semibold text-amber-300">BÊTA</span>
         </span>
         <div className="flex items-center gap-2">
+          <Link href="/tps" className="hidden rounded-full px-4 py-2 text-sm font-semibold text-kora-200 hover:text-white sm:inline">
+            TP guidés
+          </Link>
           <Link href="/connexion" className="rounded-full px-4 py-2 text-sm font-semibold text-kora-200 hover:text-white">
             Se connecter
           </Link>

@@ -13,7 +13,7 @@ import {
   type Node,
   type NodeChange,
 } from "@xyflow/react";
-import { Cable, CircleHelp, Cloud, CloudCheck, CloudOff, Download, FilePlus2, FlaskConical, Loader2, Monitor, MousePointer2, Network as SwitchIcon, Router, Trash2, Upload, X } from "lucide-react";
+import { BookOpen, Boxes, Cable, CheckCircle2, CircleHelp, Cloud, CloudCheck, CloudOff, Download, FilePlus2, FlaskConical, Loader2, Lock, Monitor, MousePointer2, Network as SwitchIcon, RotateCcw, Router, Server, Trash2, Upload, X, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -21,6 +21,7 @@ import { IosCli } from "@/engine/cli/ios";
 import { PcCli } from "@/engine/cli/pc";
 import { isIp, isMask } from "@/engine/ip";
 import { Network, shortIf, type Device, type DeviceKind } from "@/engine/network";
+import { evaluate, type Check, type CheckResult } from "@/engine/checks";
 import { createLab } from "@/lib/labs";
 import { AccountMenu } from "../auth/AccountMenu";
 import { useAuth } from "../auth/AuthProvider";
@@ -33,7 +34,7 @@ const nodeTypes = { device: DeviceNode };
 const edgeTypes = { link: LinkEdge };
 
 /** Topologie de départ du TP 01 (non configurée) : un routeur, deux switchs, deux PC. */
-function starter(): Network {
+export function starter(): Network {
   const net = new Network();
   const r1 = net.addDevice("router", 330, 40);
   const s1 = net.addDevice("switch", 120, 230);
@@ -62,15 +63,55 @@ function load(): Network {
 /** Lab enregistré en ligne (ouvert depuis « Mes labs »). */
 export type CloudLab = { id: string; name: string; initial: Network; save: (json: string) => Promise<void> };
 
-export function Lab({ cloud }: { cloud?: CloudLab }) {
+/** Mode TP : énoncé, topologie de départ et critères de vérification. */
+export type TpMode = { id: string; title: string; statement: string; checks: Check[]; initial: string; onResult?: (score: number, total: number) => void };
+
+export function Lab({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
   return (
     <ReactFlowProvider>
-      <LabInner cloud={cloud} />
+      <LabInner cloud={cloud} tp={tp} />
     </ReactFlowProvider>
   );
 }
 
-function LabInner({ cloud }: { cloud?: CloudLab }) {
+/** Bibliothèque d'équipements, classés par constructeur. */
+const LIBRARY: { vendor: string; color: string; items: { kind: DeviceKind; label: string; icon: typeof Router; soon?: boolean }[] }[] = [
+  {
+    vendor: "Cisco (simulé)",
+    color: "text-sky-300",
+    items: [
+      { kind: "router", label: "Routeur KR-4300", icon: Router },
+      { kind: "switch", label: "Switch KS-24", icon: SwitchIcon },
+    ],
+  },
+  {
+    vendor: "Huawei (simulé)",
+    color: "text-rose-300",
+    items: [
+      { kind: "router", label: "Routeur AR", icon: Router, soon: true },
+      { kind: "switch", label: "Switch S", icon: SwitchIcon, soon: true },
+    ],
+  },
+  {
+    vendor: "MikroTik (simulé)",
+    color: "text-slate-300",
+    items: [{ kind: "router", label: "RouterBOARD", icon: Router, soon: true }],
+  },
+  {
+    vendor: "Génériques",
+    color: "text-emerald-300",
+    items: [
+      { kind: "pc", label: "PC", icon: Monitor },
+      { kind: "pc", label: "Serveur", icon: Server, soon: true },
+    ],
+  },
+];
+
+function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
+  const tpKey = tp ? `koralab:tp:${tp.id}` : null;
+  const [library, setLibrary] = useState(false);
+  const [tpPanel, setTpPanel] = useState(true);
+  const [results, setResults] = useState<CheckResult[] | null>(null);
   const flow = useReactFlow();
   const router = useRouter();
   const { user } = useAuth();
@@ -93,9 +134,23 @@ function LabInner({ cloud }: { cloud?: CloudLab }) {
 
   // Chargement : lab en ligne, sinon dernier lab de ce navigateur (localStorage)
   useEffect(() => {
-    netRef.current = cloud?.initial ?? load();
+    if (tp) {
+      // Mode TP : on reprend la progression de l'étudiant (navigateur), sinon la topologie de départ
+      let saved: string | null = null;
+      try {
+        saved = localStorage.getItem(tpKey!);
+      } catch {
+        /* stockage indisponible */
+      }
+      try {
+        netRef.current = Network.fromJSON(JSON.parse(saved ?? tp.initial));
+      } catch {
+        netRef.current = Network.fromJSON(JSON.parse(tp.initial));
+      }
+    } else netRef.current = cloud?.initial ?? load();
     setReady(true);
     bump();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bump, cloud]);
 
   const net = netRef.current;
@@ -118,7 +173,7 @@ function LabInner({ cloud }: { cloud?: CloudLab }) {
     const json = JSON.stringify(net.toJSON());
     if (!cloud) {
       try {
-        localStorage.setItem(STORAGE, json);
+        localStorage.setItem(tpKey ?? STORAGE, json);
       } catch {
         /* stockage plein ou bloqué */
       }
@@ -140,6 +195,24 @@ function LabInner({ cloud }: { cloud?: CloudLab }) {
     }, 1200);
     return () => window.clearTimeout(t);
   }, [ver, net, cloud]);
+
+  /** Mode TP : teste les critères sur la topologie de l'étudiant. */
+  const check = () => {
+    if (!tp || !net) return;
+    const original = Network.fromJSON(JSON.parse(tp.initial));
+    const name = (id: string) => original.getDevice(id)?.hostname ?? net.getDevice(id)?.hostname ?? "?";
+    const res = evaluate(net, tp.checks, name);
+    setResults(res);
+    setTpPanel(true);
+    bump();
+    tp.onResult?.(res.filter((r) => r.ok).length, res.length);
+  };
+
+  const restartTp = () => {
+    if (!tp || !confirm("Recommencer le TP depuis la topologie de départ ? Votre configuration actuelle sera effacée.")) return;
+    setResults(null);
+    resetLab(Network.fromJSON(JSON.parse(tp.initial)));
+  };
 
   /** Copie le lab du navigateur dans le compte, puis l'ouvre en mode « en ligne ». */
   const saveOnline = async () => {
@@ -317,7 +390,12 @@ function LabInner({ cloud }: { cloud?: CloudLab }) {
           KoraLab
         </Link>
         <span className="hidden rounded-full bg-amber-400/15 px-2 py-0.5 text-[11px] font-semibold text-amber-300 sm:inline">BÊTA</span>
-        {cloud ? (
+        {tp ? (
+          <span className="ml-2 flex min-w-0 items-center gap-2 text-sm">
+            <BookOpen size={15} className="shrink-0 text-kora-300" />
+            <span className="truncate font-semibold text-white">{tp.title}</span>
+          </span>
+        ) : cloud ? (
           <span className="ml-2 flex min-w-0 items-center gap-2 text-sm">
             <span className="truncate font-semibold text-white">{cloud.name}</span>
             <span className={`flex shrink-0 items-center gap-1 text-xs ${saveState === "error" ? "text-ko" : "text-kora-200/60"}`}>
@@ -331,8 +409,20 @@ function LabInner({ cloud }: { cloud?: CloudLab }) {
           </button>
         )}
         <div className="ml-auto flex flex-wrap items-center gap-1.5 text-sm">
-          <TopButton icon={FilePlus2} label="Nouveau" onClick={() => confirm("Effacer le lab actuel et repartir de zéro ?") && resetLab(new Network())} />
-          <TopButton icon={FlaskConical} label="TP 01" title="Charger la topologie de départ du TP 01" onClick={() => confirm("Remplacer le lab actuel par la topologie du TP 01 ?") && resetLab(starter())} />
+          {tp ? (
+            <>
+              <button onClick={check} className="flex items-center gap-1.5 rounded-lg bg-ok/90 px-3 py-1.5 font-semibold text-ink-950 hover:bg-ok">
+                <CheckCircle2 size={16} /> Vérifier
+              </button>
+              <TopButton icon={BookOpen} label="Énoncé" onClick={() => setTpPanel((v) => !v)} />
+              <TopButton icon={RotateCcw} label="Recommencer" onClick={restartTp} />
+            </>
+          ) : (
+            <>
+              <TopButton icon={FilePlus2} label="Nouveau" onClick={() => confirm("Effacer le lab actuel et repartir de zéro ?") && resetLab(new Network())} />
+              <TopButton icon={FlaskConical} label="TP 01" title="Charger la topologie de départ du TP 01" onClick={() => confirm("Remplacer le lab actuel par la topologie du TP 01 ?") && resetLab(starter())} />
+            </>
+          )}
           <TopButton icon={Download} label="Exporter" onClick={exportLab} />
           <TopButton icon={Upload} label="Importer" onClick={() => fileInput.current?.click()} />
           <TopButton icon={CircleHelp} label="Aide" onClick={() => setHelp(true)} />
@@ -347,12 +437,49 @@ function LabInner({ cloud }: { cloud?: CloudLab }) {
           <ToolButton icon={MousePointer2} label="Sélection" active={tool === "select"} onClick={() => (setTool("select"), setPicked(null))} />
           <ToolButton icon={Cable} label="Câble" active={tool === "cable"} onClick={() => (setTool("cable"), notify("Cliquez sur un premier équipement, puis sur le second."))} />
           <div className="my-1 h-px w-10 bg-white/10" />
-          <ToolButton icon={Router} label="Routeur" onClick={() => addDevice("router")} />
-          <ToolButton icon={SwitchIcon} label="Switch" onClick={() => addDevice("switch")} />
-          <ToolButton icon={Monitor} label="PC" onClick={() => addDevice("pc")} />
+          <ToolButton icon={Boxes} label="Équipements" active={library} onClick={() => setLibrary((v) => !v)} />
           <div className="my-1 h-px w-10 bg-white/10" />
           <ToolButton icon={Trash2} label="Supprimer" onClick={deleteSelection} />
         </aside>
+
+        {/* Bibliothèque d'équipements par constructeur */}
+        {library && (
+          <div className="absolute bottom-0 left-[72px] top-0 z-20 w-64 overflow-y-auto border-r border-white/10 bg-ink-900/97 p-3 shadow-2xl backdrop-blur">
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-sm font-semibold text-white">Équipements</p>
+              <button onClick={() => setLibrary(false)} aria-label="Fermer la bibliothèque" className="text-kora-200/70 hover:text-white">
+                <X size={16} />
+              </button>
+            </div>
+            {LIBRARY.map((cat) => (
+              <div key={cat.vendor} className="mb-3">
+                <p className={`mb-1.5 font-mono text-[11px] uppercase tracking-wider ${cat.color}`}>{cat.vendor}</p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {cat.items.map((it) => (
+                    <button
+                      key={it.label}
+                      disabled={it.soon}
+                      onClick={() => addDevice(it.kind)}
+                      title={it.soon ? "Bientôt disponible" : `Ajouter : ${it.label}`}
+                      className="relative flex flex-col items-center gap-1 rounded-xl bg-white/[.05] px-2 py-2.5 text-center text-[11px] leading-tight text-kora-50 ring-1 ring-white/8 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <it.icon size={20} strokeWidth={1.7} />
+                      {it.label}
+                      {it.soon && (
+                        <span className="absolute right-1 top-1 flex items-center gap-0.5 text-[9px] text-kora-200">
+                          <Lock size={9} /> bientôt
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <p className="mt-2 text-[11px] leading-snug text-kora-200/50">
+              Les équipements reproduisent les commandes de chaque constructeur. KoraLab n&apos;est affilié à aucun d&apos;eux.
+            </p>
+          </div>
+        )}
 
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Canevas */}
@@ -427,6 +554,45 @@ function LabInner({ cloud }: { cloud?: CloudLab }) {
             </section>
           )}
         </div>
+
+        {/* Mode TP : énoncé et résultats de la vérification */}
+        {tp && tpPanel && (
+          <aside className="flex w-[22rem] shrink-0 flex-col border-l border-white/8 bg-ink-900/80">
+            <div className="flex items-center justify-between border-b border-white/8 px-4 py-2.5">
+              <p className="font-semibold text-white">Énoncé</p>
+              <button onClick={() => setTpPanel(false)} aria-label="Masquer l'énoncé" className="text-kora-200/70 hover:text-white">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+              {results && (
+                <div className="mb-4 rounded-xl bg-ink-950 p-3 ring-1 ring-white/10">
+                  <p className="font-semibold">
+                    Score : {results.filter((r) => r.ok).length} / {results.length}
+                    {results.every((r) => r.ok) && " 🎉 TP réussi !"}
+                  </p>
+                  <ul className="mt-2 space-y-2 text-sm">
+                    {results.map((r, i) => (
+                      <li key={i} className="flex gap-2">
+                        {r.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-ok" /> : <XCircle size={16} className="mt-0.5 shrink-0 text-ko" />}
+                        <span>
+                          <span className={r.ok ? "text-kora-50" : "text-white"}>{r.label}</span>
+                          {!r.ok && r.hint && <span className="block text-xs text-kora-200/60">{r.hint}</span>}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="whitespace-pre-wrap text-sm leading-relaxed text-kora-200">{tp.statement || "Aucun énoncé."}</div>
+            </div>
+            <div className="border-t border-white/8 p-3">
+              <button onClick={check} className="flex w-full items-center justify-center gap-2 rounded-xl bg-ok/90 py-2 font-semibold text-ink-950 hover:bg-ok">
+                <CheckCircle2 size={16} /> Vérifier mon TP
+              </button>
+            </div>
+          </aside>
+        )}
 
         {toast && <div className="absolute bottom-5 left-1/2 z-20 -translate-x-1/2 rounded-full bg-ink-800 px-4 py-2 text-sm text-white shadow-xl ring-1 ring-white/10">{toast}</div>}
       </div>

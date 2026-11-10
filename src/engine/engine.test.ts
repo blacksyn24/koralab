@@ -185,3 +185,25 @@ describe("Interpréteur de commandes", () => {
     expect(copy.ping(pc, "192.168.50.140").some((r) => r.ok)).toBe(true);
   });
 });
+
+describe("Vérification des TP", () => {
+  it("note un TP : critères réussis et ratés", async () => {
+    const { evaluate } = await import("./checks");
+    const { net, r1, pc1, pc3 } = kora();
+    const name = (id: string) => net.getDevice(id)?.hostname ?? id;
+    const res = evaluate(
+      net,
+      [
+        { type: "hostname", device: r1.id, value: "R1-KORA" },
+        { type: "ip", device: r1.id, iface: "GigabitEthernet0/0/0", ip: "192.168.50.1", mask: "255.255.255.128" },
+        { type: "up", device: r1.id, iface: "GigabitEthernet0/0/2" },
+        { type: "gateway", device: pc1.id, value: "192.168.50.1" },
+        { type: "route", device: r1.id, network: "192.168.50.128", mask: "255.255.255.192" },
+        { type: "ping", device: pc1.id, to: "192.168.50.140" },
+        { type: "ping", device: pc3.id, to: "10.9.9.9" },
+      ],
+      name
+    );
+    expect(res.map((r) => r.ok)).toEqual([true, true, false, true, true, true, false]);
+  });
+});
