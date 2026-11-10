@@ -51,10 +51,35 @@ service cloud.firestore {
       allow delete: if signedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
     }
 
-    // TP guidés (étape suivante) : lecture publique des TP publiés, écriture réservée aux admins
+    // TP guidés : lecture publique des TP publiés, écriture réservée aux admins
     match /tps/{tpId} {
       allow read: if resource.data.get("published", false) == true || isAdmin();
       allow write: if isAdmin();
+    }
+
+    // Hackathons : infos publiques une fois publiés, gérés par les admins
+    match /hackathons/{hid} {
+      allow read: if resource.data.get("published", false) == true || isAdmin();
+      allow write: if isAdmin();
+
+      // Participants : chacun s'inscrit lui-même avec un score nul.
+      // Les scores ne sont JAMAIS écrits par le navigateur : seul le serveur (correction) les modifie.
+      match /participants/{uid} {
+        allow read: if signedIn();
+        allow create: if active() && request.auth.uid == uid
+          && request.resource.data.score == 0
+          && request.resource.data.solved.size() == 0
+          && request.resource.data.attempts.size() == 0
+          && get(/databases/$(database)/documents/hackathons/$(hid)).data.published == true
+          && request.time < get(/databases/$(database)/documents/hackathons/$(hid)).data.endAt;
+        allow update: if false;
+        allow delete: if isAdmin();
+      }
+    }
+
+    // Critères de correction des hackathons : secrets, lisibles uniquement par les admins (et le serveur)
+    match /hackathonSecrets/{hid} {
+      allow read, write: if isAdmin();
     }
   }
 }

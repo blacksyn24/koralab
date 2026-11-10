@@ -28,6 +28,9 @@ export function SiteFooter() {
         <Link href="/tps" className="hover:text-white">
           TP guidés
         </Link>
+        <Link href="/hackathons" className="hover:text-white">
+          Hackathons
+        </Link>
         <Link href="/confidentialite" className="hover:text-white">
           Confidentialité
         </Link>

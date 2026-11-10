@@ -20,7 +20,7 @@ export const CHECK_TYPES: { type: Check["type"]; label: string }[] = [
   { type: "route", label: "Route présente dans la table" },
 ];
 
-export type CheckResult = { check: Check; ok: boolean; label: string; hint?: string };
+export type CheckResult = { check?: Check; ok: boolean; label: string; hint?: string };
 
 /** Texte lisible d'un critère, à partir des noms d'origine des équipements. */
 export function describe(c: Check, name: (id: string) => string): string {

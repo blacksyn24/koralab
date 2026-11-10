@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, LayoutDashboard, Loader2, ShieldAlert, Users } from "lucide-react";
+import { BookOpen, LayoutDashboard, Loader2, ShieldAlert, Trophy, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { AccountMenu } from "@/components/auth/AccountMenu";
@@ -10,6 +10,7 @@ const NAV = [
   { href: "/admin", label: "Vue d'ensemble", icon: LayoutDashboard },
   { href: "/admin/utilisateurs", label: "Utilisateurs", icon: Users },
   { href: "/admin/tps", label: "TP guidés", icon: BookOpen },
+  { href: "/admin/hackathons", label: "Hackathons", icon: Trophy },
 ];
 
 /** Espace d'administration : réservé aux comptes dont le rôle est « admin ». */

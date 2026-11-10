@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, FolderOpen, LogIn, LogOut, ShieldCheck } from "lucide-react";
+import { BookOpen, FolderOpen, LogIn, LogOut, ShieldCheck, Trophy } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "./AuthProvider";
@@ -50,6 +50,9 @@ export function AccountMenu() {
           </Link>
           <Link href="/tps" className="flex items-center gap-2 px-4 py-2.5 hover:bg-white/8" onClick={() => setOpen(false)}>
             <BookOpen size={15} /> TP guidés
+          </Link>
+          <Link href="/hackathons" className="flex items-center gap-2 px-4 py-2.5 hover:bg-white/8" onClick={() => setOpen(false)}>
+            <Trophy size={15} /> Hackathons
           </Link>
           {isAdmin && (
             <Link href="/admin" className="flex items-center gap-2 px-4 py-2.5 hover:bg-white/8" onClick={() => setOpen(false)}>

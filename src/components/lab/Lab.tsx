@@ -64,7 +64,18 @@ function load(): Network {
 export type CloudLab = { id: string; name: string; initial: Network; save: (json: string) => Promise<void> };
 
 /** Mode TP : énoncé, topologie de départ et critères de vérification. */
-export type TpMode = { id: string; title: string; statement: string; checks: Check[]; initial: string; onResult?: (score: number, total: number) => void };
+export type TpMode = {
+  id: string;
+  title: string;
+  statement: string;
+  checks: Check[];
+  initial: string;
+  onResult?: (score: number, total: number) => void;
+  /** Hackathon : correction sur le serveur, critères secrets. Renvoie le résultat de chaque critère et un message. */
+  remote?: (json: string) => Promise<{ passed: boolean[]; message: string }>;
+  /** Lien de retour (page du hackathon) */
+  backHref?: string;
+};
 
 export function Lab({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
   return (
@@ -112,6 +123,8 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
   const [library, setLibrary] = useState(false);
   const [tpPanel, setTpPanel] = useState(true);
   const [results, setResults] = useState<CheckResult[] | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [remoteMsg, setRemoteMsg] = useState("");
   const flow = useReactFlow();
   const router = useRouter();
   const { user } = useAuth();
@@ -227,8 +240,23 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
   }, [cloud, flushSave]);
 
   /** Mode TP : teste les critères sur la topologie de l'étudiant. */
-  const check = () => {
+  const check = async () => {
     if (!tp || !net) return;
+    if (tp.remote) {
+      // Hackathon : le serveur corrige, on n'affiche que réussi / raté pour chaque critère
+      setChecking(true);
+      setTpPanel(true);
+      try {
+        const r = await tp.remote(JSON.stringify(net.toJSON()));
+        setResults(r.passed.map((ok, i) => ({ ok, label: `Critère ${i + 1}` })));
+        setRemoteMsg(r.message);
+      } catch (e) {
+        setRemoteMsg(e instanceof Error ? e.message : "Vérification impossible.");
+      } finally {
+        setChecking(false);
+      }
+      return;
+    }
     const original = Network.fromJSON(JSON.parse(tp.initial));
     const name = (id: string) => original.getDevice(id)?.hostname ?? net.getDevice(id)?.hostname ?? "?";
     const res = evaluate(net, tp.checks, name);
@@ -441,8 +469,13 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
         <div className="ml-auto flex flex-wrap items-center gap-1.5 text-sm">
           {tp ? (
             <>
-              <button onClick={check} className="flex items-center gap-1.5 rounded-lg bg-ok/90 px-3 py-1.5 font-semibold text-ink-950 hover:bg-ok">
-                <CheckCircle2 size={16} /> Vérifier
+              {tp.backHref && (
+                <Link href={tp.backHref} className="rounded-lg px-2.5 py-1.5 text-kora-200 hover:bg-white/8 hover:text-white">
+                  ← Hackathon
+                </Link>
+              )}
+              <button onClick={check} disabled={checking} className="flex items-center gap-1.5 rounded-lg bg-ok/90 px-3 py-1.5 font-semibold text-ink-950 hover:bg-ok disabled:opacity-60">
+                {checking ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} {tp.remote ? "Soumettre" : "Vérifier"}
               </button>
               <TopButton icon={BookOpen} label="Énoncé" onClick={() => setTpPanel((v) => !v)} />
               <TopButton icon={RotateCcw} label="Recommencer" onClick={restartTp} />
@@ -595,6 +628,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
               </button>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+              {remoteMsg && <p className="mb-3 rounded-xl bg-kora-500/15 px-3 py-2 text-sm text-kora-50 ring-1 ring-kora-300/30">{remoteMsg}</p>}
               {results && (
                 <div className="mb-4 rounded-xl bg-ink-950 p-3 ring-1 ring-white/10">
                   <p className="font-semibold">
@@ -617,8 +651,8 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
               <div className="whitespace-pre-wrap text-sm leading-relaxed text-kora-200">{tp.statement || "Aucun énoncé."}</div>
             </div>
             <div className="border-t border-white/8 p-3">
-              <button onClick={check} className="flex w-full items-center justify-center gap-2 rounded-xl bg-ok/90 py-2 font-semibold text-ink-950 hover:bg-ok">
-                <CheckCircle2 size={16} /> Vérifier mon TP
+              <button onClick={check} disabled={checking} className="flex w-full items-center justify-center gap-2 rounded-xl bg-ok/90 py-2 font-semibold text-ink-950 hover:bg-ok disabled:opacity-60">
+                {checking ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} {tp.remote ? "Soumettre ma solution" : "Vérifier mon TP"}
               </button>
             </div>
           </aside>

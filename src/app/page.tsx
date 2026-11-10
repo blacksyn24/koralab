@@ -24,6 +24,9 @@ export default function Home() {
           <Link href="/tps" className="hidden rounded-full px-4 py-2 text-sm font-semibold text-kora-200 hover:text-white sm:inline">
             TP guidés
           </Link>
+          <Link href="/hackathons" className="hidden rounded-full px-4 py-2 text-sm font-semibold text-kora-200 hover:text-white sm:inline">
+            Hackathons
+          </Link>
           <Link href="/connexion" className="rounded-full px-4 py-2 text-sm font-semibold text-kora-200 hover:text-white">
             Se connecter
           </Link>

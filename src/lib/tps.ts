@@ -155,6 +155,6 @@ export async function exportBackup(): Promise<string> {
     return v;
   };
   const dump = async (name: string) => (await getDocs(collection(db, name))).docs.map((d) => ({ id: d.id, ...(plain(d.data()) as object) }));
-  const [users, labs, tps] = await Promise.all([dump("users"), dump("labs"), dump("tps")]);
-  return JSON.stringify({ exportedAt: new Date().toISOString(), users, labs, tps }, null, 2);
+  const [users, labs, tps, hackathons, hackathonSecrets] = await Promise.all([dump("users"), dump("labs"), dump("tps"), dump("hackathons"), dump("hackathonSecrets")]);
+  return JSON.stringify({ exportedAt: new Date().toISOString(), users, labs, tps, hackathons, hackathonSecrets }, null, 2);
 }

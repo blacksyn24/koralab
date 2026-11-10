@@ -1,14 +1,16 @@
 "use client";
 
-import { BookOpen, DatabaseBackup, FlaskConical, GraduationCap, Loader2, UserPlus, Users } from "lucide-react";
+import { BookOpen, DatabaseBackup, FlaskConical, GraduationCap, Loader2, Trophy, UserPlus, Users } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { listAllHackathons, statusOf, type Hackathon } from "@/lib/hackathons";
 import { countLabs, exportBackup, listAllTps, listUsers, type Tp, type UserRow } from "@/lib/tps";
 
 export default function AdminHome() {
   const [users, setUsers] = useState<UserRow[] | null>(null);
   const [labs, setLabs] = useState(0);
   const [tps, setTps] = useState<Tp[]>([]);
+  const [hks, setHks] = useState<Hackathon[]>([]);
   const [error, setError] = useState("");
   const [backingUp, setBackingUp] = useState(false);
 
@@ -31,8 +33,8 @@ export default function AdminHome() {
   };
 
   useEffect(() => {
-    Promise.all([listUsers(), countLabs(), listAllTps()])
-      .then(([u, l, t]) => (setUsers(u), setLabs(l), setTps(t)))
+    Promise.all([listUsers(), countLabs(), listAllTps(), listAllHackathons().catch(() => [])])
+      .then(([u, l, t, h]) => (setUsers(u), setLabs(l), setTps(t), setHks(h)))
       .catch((e) => {
         console.error(e);
         setError("Chargement impossible. Vérifiez que les règles Firestore sont bien publiées.");
@@ -49,6 +51,7 @@ export default function AdminHome() {
     { icon: FlaskConical, label: "Labs enregistrés", value: labs },
     { icon: BookOpen, label: "TP publiés", value: `${tps.filter((t) => t.published).length} / ${tps.length}` },
     { icon: GraduationCap, label: "TP réussis (au total)", value: users.reduce((n, u) => n + u.tpsDone, 0) },
+    { icon: Trophy, label: "Hackathons (en cours / total)", value: `${hks.filter((h) => statusOf(h) === "live").length} / ${hks.length}` },
   ];
 
   return (
@@ -60,7 +63,7 @@ export default function AdminHome() {
         </button>
       </div>
       {error && <p className="mt-4 rounded-xl bg-ko/10 px-4 py-3 text-sm text-ko">{error}</p>}
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="mt-6 grid gap-4 sm:grid-cols-3 lg:grid-cols-6">
         {stats.map((s) => (
           <div key={s.label} className="rounded-2xl bg-white/[.04] p-5 ring-1 ring-white/8">
             <s.icon size={20} className="text-kora-300" />

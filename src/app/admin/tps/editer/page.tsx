@@ -1,34 +1,18 @@
 "use client";
 
-import { ArrowLeft, Loader2, Plus, Save, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, Loader2, Save, Upload } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { CHECK_TYPES, describe, type Check } from "@/engine/checks";
-import { Network, SVI } from "@/engine/network";
+import { CheckEditor } from "@/components/admin/CheckEditor";
+import type { Check } from "@/engine/checks";
+import { Network } from "@/engine/network";
 import { getLab, listLabs, type LabMeta } from "@/lib/labs";
 import { LEVELS, getTp, saveTp } from "@/lib/tps";
 
 type Form = { title: string; level: string; summary: string; statement: string; topology: string; checks: Check[]; published: boolean; position: number };
 const EMPTY: Form = { title: "", level: "CCNA 1", summary: "", statement: "", topology: "", checks: [], published: false, position: 1 };
-
-function blank(type: Check["type"], device: string): Check {
-  switch (type) {
-    case "hostname":
-      return { type, device, value: "" };
-    case "ip":
-      return { type, device, iface: "", ip: "", mask: "" };
-    case "up":
-      return { type, device, iface: "" };
-    case "gateway":
-      return { type, device, value: "" };
-    case "route":
-      return { type, device, network: "", mask: "" };
-    case "ping":
-      return { type, device, to: "" };
-  }
-}
 
 function Editor() {
   const id = useSearchParams().get("id") ?? undefined;
@@ -61,11 +45,9 @@ function Editor() {
     }
   }, [form?.topology]);
   const devices = net?.devices ?? [];
-  const nameOf = (devId: string) => devices.find((d) => d.id === devId)?.hostname ?? "?";
 
   if (!form) return <Loader2 className="mx-auto mt-20 animate-spin text-kora-200" />;
   const set = (patch: Partial<Form>) => setForm({ ...form, ...patch });
-  const setCheck = (i: number, c: Check) => set({ checks: form.checks.map((x, k) => (k === i ? c : x)) });
 
   const pickLab = async (labId: string) => {
     const lab = await getLab(labId);
@@ -193,71 +175,9 @@ function Editor() {
 
       {/* Critères */}
       <section className="mt-6 space-y-3 rounded-2xl bg-white/[.04] p-5 ring-1 ring-white/8">
-        <div className="flex items-center justify-between">
-          <h2 className="font-semibold">3. Critères de vérification ({form.checks.length})</h2>
-          <button
-            disabled={!devices.length}
-            onClick={() => set({ checks: [...form.checks, blank("ping", devices[0]?.id ?? "")] })}
-            className="flex items-center gap-1.5 rounded-lg bg-kora-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-kora-400 disabled:opacity-40"
-          >
-            <Plus size={15} /> Ajouter
-          </button>
-        </div>
+        <h2 className="font-semibold">3. Critères de vérification ({form.checks.length})</h2>
         <p className="text-sm text-kora-200/70">Quand l&apos;étudiant clique sur « Vérifier », chaque critère est testé sur sa topologie. Score = critères réussis / total.</p>
-        {form.checks.map((c, i) => {
-          const dev = devices.find((d) => d.id === c.device);
-          const ifaces = dev ? [...dev.ifaces.map((x) => x.name), ...(dev.svi ? [SVI] : [])] : [];
-          return (
-            <div key={i} className="space-y-2 rounded-xl bg-ink-900/70 p-3 ring-1 ring-white/8">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-semibold text-kora-300">#{i + 1}</span>
-                <select value={c.type} onChange={(e) => setCheck(i, blank(e.target.value as Check["type"], c.device))} className={`${input} !w-auto`}>
-                  {CHECK_TYPES.map((t) => (
-                    <option key={t.type} value={t.type}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-                <select value={c.device} onChange={(e) => setCheck(i, { ...c, device: e.target.value } as Check)} className={`${input} !w-auto`}>
-                  {devices.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.hostname}
-                    </option>
-                  ))}
-                </select>
-                {(c.type === "ip" || c.type === "up") && (
-                  <select value={c.iface} onChange={(e) => setCheck(i, { ...c, iface: e.target.value })} className={`${input} !w-auto`}>
-                    <option value="">Interface…</option>
-                    {ifaces.map((n) => (
-                      <option key={n}>{n}</option>
-                    ))}
-                  </select>
-                )}
-                {c.type === "ip" && (
-                  <>
-                    <input value={c.ip} onChange={(e) => setCheck(i, { ...c, ip: e.target.value.trim() })} placeholder="IP" className={`${input} !w-36 font-mono`} />
-                    <input value={c.mask} onChange={(e) => setCheck(i, { ...c, mask: e.target.value.trim() })} placeholder="Masque" className={`${input} !w-40 font-mono`} />
-                  </>
-                )}
-                {(c.type === "hostname" || c.type === "gateway") && (
-                  <input value={c.value} onChange={(e) => setCheck(i, { ...c, value: e.target.value.trim() })} placeholder={c.type === "hostname" ? "Nom attendu" : "IP de la passerelle"} className={`${input} !w-44 font-mono`} />
-                )}
-                {c.type === "route" && (
-                  <>
-                    <input value={c.network} onChange={(e) => setCheck(i, { ...c, network: e.target.value.trim() })} placeholder="Réseau" className={`${input} !w-36 font-mono`} />
-                    <input value={c.mask} onChange={(e) => setCheck(i, { ...c, mask: e.target.value.trim() })} placeholder="Masque" className={`${input} !w-40 font-mono`} />
-                  </>
-                )}
-                {c.type === "ping" && <input value={c.to} onChange={(e) => setCheck(i, { ...c, to: e.target.value.trim() })} placeholder="IP à pinguer" className={`${input} !w-40 font-mono`} />}
-                <button onClick={() => set({ checks: form.checks.filter((_, k) => k !== i) })} title="Supprimer" className="ml-auto rounded-lg p-2 text-ko/80 hover:bg-white/8 hover:text-ko">
-                  <Trash2 size={15} />
-                </button>
-              </div>
-              <p className="text-xs text-kora-200/60">→ {describe(c, nameOf)}</p>
-            </div>
-          );
-        })}
-        {!devices.length && <p className="text-sm text-kora-200/60">Choisissez d&apos;abord une topologie pour ajouter des critères.</p>}
+        <CheckEditor checks={form.checks} devices={devices} onChange={(checks) => set({ checks })} />
       </section>
     </div>
   );
