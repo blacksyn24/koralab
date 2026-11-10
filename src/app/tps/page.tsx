@@ -7,6 +7,8 @@ import { AccountMenu } from "@/components/auth/AccountMenu";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { LEVELS, getProgress, listPublishedTps, type Progress, type Tp } from "@/lib/tps";
 
+import { KoraLogo } from "@/components/Logo";
+
 export default function TpsPage() {
   const { user } = useAuth();
   const [tps, setTps] = useState<Tp[] | null>(null);
@@ -28,8 +30,7 @@ export default function TpsPage() {
     <main className="min-h-dvh">
       <header className="flex items-center gap-3 border-b border-white/8 bg-ink-900/80 px-4 py-2.5">
         <Link href="/" className="flex items-center gap-2 font-bold">
-          <span className="grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-br from-kora-300 to-kora-500 text-sm">K</span>
-          KoraLab
+          <KoraLogo size={28} />
         </Link>
         <div className="ml-auto flex items-center gap-2">
           <Link href="/lab" className="rounded-lg px-3 py-1.5 text-sm text-kora-200 hover:bg-white/8 hover:text-white">

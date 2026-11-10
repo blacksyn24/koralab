@@ -10,6 +10,8 @@ import { Countdown } from "@/components/hackathon/Countdown";
 import { Leaderboard } from "@/components/hackathon/Leaderboard";
 import { STATUS_LABEL, getHackathon, join, statusOf, watchLeaderboard, type Hackathon, type Participant } from "@/lib/hackathons";
 
+import { KoraMark } from "@/components/Logo";
+
 const fmt = (d: Date) => d.toLocaleString("fr-FR", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
 
 function HackathonView() {
@@ -70,7 +72,7 @@ function HackathonView() {
     <main className="min-h-dvh">
       <header className="flex items-center gap-3 border-b border-white/8 bg-ink-900/80 px-4 py-2.5">
         <Link href="/hackathons" className="flex items-center gap-2 font-bold">
-          <span className="grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-br from-kora-300 to-kora-500 text-sm">K</span>
+          <KoraMark size={32} />
           Hackathons
         </Link>
         <div className="ml-auto">

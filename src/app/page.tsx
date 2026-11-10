@@ -2,6 +2,8 @@ import { ArrowRight, Boxes, Download, GraduationCap, Laptop, Terminal, Wifi } fr
 import Link from "next/link";
 import { SiteFooter } from "@/components/LegalPage";
 
+import { KoraLogo } from "@/components/Logo";
+
 const features = [
   { icon: Laptop, title: "Rien à installer", text: "Un navigateur suffit, même sur un petit PC. Pas d'images IOS à chercher, pas de machine virtuelle." },
   { icon: Terminal, title: "De vraies commandes", text: "enable, conf t, ip address, no shutdown, show ip route, ping… avec les abréviations, l'aide « ? » et la touche Tab." },
@@ -16,8 +18,7 @@ export default function Home() {
     <main className="min-h-dvh bg-[radial-gradient(900px_600px_at_20%_0%,rgb(0_122_255/.35),transparent_70%),radial-gradient(700px_500px_at_100%_40%,rgb(77_163_255/.18),transparent_70%)]">
       <nav className="mx-auto flex max-w-6xl items-center justify-between px-5 py-5">
         <span className="flex items-center gap-2 text-lg font-bold">
-          <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-kora-300 to-kora-500">K</span>
-          KoraLab
+          <KoraLogo size={32} />
           <span className="rounded-full bg-amber-400/15 px-2 py-0.5 text-[11px] font-semibold text-amber-300">BÊTA</span>
         </span>
         <div className="flex items-center gap-2">

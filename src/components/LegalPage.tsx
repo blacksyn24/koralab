@@ -1,13 +1,14 @@
 import Link from "next/link";
 
+import { KoraLogo } from "@/components/Logo";
+
 /** Mise en page commune des pages légales. */
 export function LegalPage({ title, updated, children }: { title: string; updated: string; children: React.ReactNode }) {
   return (
     <main className="min-h-dvh">
       <header className="border-b border-white/8 bg-ink-900/80 px-4 py-3">
         <Link href="/" className="flex items-center gap-2 font-bold">
-          <span className="grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-br from-kora-300 to-kora-500 text-sm">K</span>
-          KoraLab
+          <KoraLogo size={28} />
         </Link>
       </header>
       <article className="mx-auto max-w-3xl px-4 py-10 leading-relaxed text-kora-200 [&_h2]:mt-8 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-white [&_li]:mt-1 [&_p]:mt-3 [&_ul]:mt-2 [&_ul]:list-disc [&_ul]:pl-6">

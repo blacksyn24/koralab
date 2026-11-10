@@ -29,6 +29,8 @@ import { DeviceNode, type DeviceNodeData } from "./DeviceNode";
 import { LinkEdge, type LinkEdgeData } from "./LinkEdge";
 import { Terminal, type Shell } from "./Terminal";
 
+import { KoraLogo } from "@/components/Logo";
+
 const STORAGE = "koralab:lab:v1";
 const nodeTypes = { device: DeviceNode };
 const edgeTypes = { link: LinkEdge };
@@ -444,8 +446,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
       {/* En-tête */}
       <header className="flex items-center gap-3 border-b border-white/8 bg-ink-900/80 px-4 py-2.5 backdrop-blur">
         <Link href="/" className="flex items-center gap-2 font-bold tracking-tight">
-          <span className="grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-br from-kora-300 to-kora-500 text-sm">K</span>
-          KoraLab
+          <KoraLogo size={28} />
         </Link>
         <span className="hidden rounded-full bg-amber-400/15 px-2 py-0.5 text-[11px] font-semibold text-amber-300 sm:inline">BÊTA</span>
         {tp ? (

@@ -7,6 +7,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Avatar } from "./ui";
 
+import { KoraLogo, KoraMark } from "@/components/Logo";
+
 export type NavItem = { href: string; label: string; icon: LucideIcon; badge?: string | number; exact?: boolean };
 export type SearchItem = { label: string; href: string; hint?: string };
 
@@ -53,8 +55,7 @@ export function DashShell({
         {/* Barre latérale */}
         <aside className="hidden w-60 shrink-0 flex-col rounded-3xl bg-ink-900/70 p-4 ring-1 ring-white/8 md:flex">
           <Link href="/" className="mb-8 flex items-center gap-2.5 px-2 pt-2 text-lg font-bold text-white">
-            <span className="grid h-9 w-9 place-items-center rounded-full bg-gradient-to-br from-kora-300 to-kora-500 ring-4 ring-kora-500/20">K</span>
-            KoraLab
+            <KoraLogo size={32} />
             {tag && <span className="rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-semibold text-amber-300">{tag}</span>}
           </Link>
           <p className="px-3 text-[11px] font-medium uppercase tracking-wider text-kora-200/40">Menu</p>
@@ -72,8 +73,8 @@ export function DashShell({
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           {/* Barre du haut */}
           <header className="flex items-center gap-3 rounded-none bg-ink-900/70 px-3 py-2.5 ring-1 ring-white/8 sm:rounded-3xl sm:px-4">
-            <Link href="/" className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-gradient-to-br from-kora-300 to-kora-500 font-bold md:hidden">
-              K
+            <Link href="/" className="shrink-0 md:hidden">
+              <KoraMark size={32} />
             </Link>
             <QuickSearch items={[...nav, ...general].map((n) => ({ label: n.label, href: n.href })).concat(search)} />
             <div className="ml-auto flex shrink-0 items-center gap-2">
@@ -185,7 +186,7 @@ export function PromoCard({ title, text, href, cta }: { title: string; text: str
     <div className="relative overflow-hidden rounded-2xl bg-[#0a0a0b] p-4 ring-1 ring-white/10">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(160px_120px_at_100%_100%,rgb(0_122_255/.55),transparent),repeating-radial-gradient(circle_at_100%_100%,transparent_0_10px,rgb(77_163_255/.10)_10px_11px)]" />
       <div className="relative">
-        <span className="grid h-8 w-8 place-items-center rounded-full bg-white/10 text-sm font-bold">K</span>
+        <KoraMark size={32} />
         <p className="mt-3 font-semibold leading-snug text-white">{title}</p>
         <p className="mt-1 text-xs text-kora-200/70">{text}</p>
         <Link href={href} className="mt-4 block rounded-full bg-kora-500 py-2 text-center text-sm font-semibold text-white hover:bg-kora-400">

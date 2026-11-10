@@ -1,6 +1,6 @@
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { AuthProvider } from "@/components/auth/AuthProvider";
 import "./globals.css";
 
@@ -17,8 +17,11 @@ export const metadata: Metadata = {
     locale: "fr_FR",
     type: "website",
   },
+  twitter: { card: "summary_large_image", title: "KoraLab — le labo réseau en ligne", description: "Configurez des routeurs et des switchs dans votre navigateur. Gratuit, sans installation." },
   robots: { index: true, follow: true },
 };
+
+export const viewport: Viewport = { themeColor: "#000000" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

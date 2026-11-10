@@ -7,6 +7,8 @@ import { AccountMenu } from "@/components/auth/AccountMenu";
 import { SiteFooter } from "@/components/LegalPage";
 import { STATUS_LABEL, listPublishedHackathons, statusOf, type Hackathon } from "@/lib/hackathons";
 
+import { KoraLogo } from "@/components/Logo";
+
 const fmt = (d: Date) => d.toLocaleString("fr-FR", { weekday: "short", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
 
 export default function HackathonsPage() {
@@ -25,8 +27,7 @@ export default function HackathonsPage() {
     <main className="flex min-h-dvh flex-col">
       <header className="flex items-center gap-3 border-b border-white/8 bg-ink-900/80 px-4 py-2.5">
         <Link href="/" className="flex items-center gap-2 font-bold">
-          <span className="grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-br from-kora-300 to-kora-500 text-sm">K</span>
-          KoraLab
+          <KoraLogo size={28} />
         </Link>
         <div className="ml-auto flex items-center gap-2">
           <Link href="/tps" className="hidden rounded-lg px-3 py-1.5 text-sm text-kora-200 hover:bg-white/8 hover:text-white sm:inline">

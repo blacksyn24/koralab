@@ -16,6 +16,8 @@ import { Suspense, useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { auth } from "@/lib/firebase";
 
+import { KoraLogo } from "@/components/Logo";
+
 /** Messages d'erreur Firebase traduits en français. */
 function message(e: unknown): string {
   const code = e instanceof FirebaseError ? e.code : "";
@@ -91,8 +93,7 @@ function ConnexionForm() {
     <main className="grid min-h-dvh place-items-center bg-[radial-gradient(900px_600px_at_20%_0%,rgb(0_122_255/.35),transparent_70%)] px-4 py-10">
       <div className="w-full max-w-md">
         <Link href="/" className="mb-6 flex items-center justify-center gap-2 text-lg font-bold">
-          <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-kora-300 to-kora-500">K</span>
-          KoraLab
+          <KoraLogo size={32} />
         </Link>
         <div className="rounded-2xl bg-ink-900/90 p-6 shadow-2xl ring-1 ring-white/10 sm:p-8">
           <div className="mb-6 grid grid-cols-2 rounded-xl bg-ink-950 p-1 text-sm">
