@@ -8,6 +8,7 @@ import { SiteFooter } from "@/components/LegalPage";
 import { STATUS_LABEL, listPublishedHackathons, statusOf, type Hackathon } from "@/lib/hackathons";
 
 import { KoraLogo } from "@/components/Logo";
+import { BackButton } from "@/components/BackButton";
 
 const fmt = (d: Date) => d.toLocaleString("fr-FR", { weekday: "short", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
 
@@ -26,6 +27,7 @@ export default function HackathonsPage() {
   return (
     <main className="flex min-h-dvh flex-col">
       <header className="flex items-center gap-3 border-b border-white/8 bg-ink-900/80 px-4 py-2.5">
+        <BackButton fallback="/" />
         <Link href="/" className="flex items-center gap-2 font-bold">
           <KoraLogo size={28} />
         </Link>

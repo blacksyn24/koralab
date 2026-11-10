@@ -1,12 +1,14 @@
 import Link from "next/link";
 
 import { KoraLogo } from "@/components/Logo";
+import { BackButton } from "@/components/BackButton";
 
 /** Mise en page commune des pages légales. */
 export function LegalPage({ title, updated, children }: { title: string; updated: string; children: React.ReactNode }) {
   return (
     <main className="min-h-dvh">
-      <header className="border-b border-white/8 bg-ink-900/80 px-4 py-3">
+      <header className="flex items-center gap-3 border-b border-white/8 bg-ink-900/80 px-4 py-3">
+        <BackButton />
         <Link href="/" className="flex items-center gap-2 font-bold">
           <KoraLogo size={28} />
         </Link>

@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Avatar } from "./ui";
 
+import { BackButton } from "@/components/BackButton";
 import { KoraLogo, KoraMark } from "@/components/Logo";
 
 export type NavItem = { href: string; label: string; icon: LucideIcon; badge?: string | number; exact?: boolean };
@@ -76,6 +77,7 @@ export function DashShell({
             <Link href="/" className="shrink-0 md:hidden">
               <KoraMark size={32} />
             </Link>
+            {path !== nav[0].href && <BackButton fallback={nav[0].href} />}
             <QuickSearch items={[...nav, ...general].map((n) => ({ label: n.label, href: n.href })).concat(search)} />
             <div className="ml-auto flex shrink-0 items-center gap-2">
               <Link href="/hackathons" className="grid h-10 w-10 place-items-center rounded-full bg-white/5 text-kora-200 ring-1 ring-white/10 hover:text-white" title="Hackathons">

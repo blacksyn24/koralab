@@ -8,6 +8,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { LEVELS, getProgress, listPublishedTps, type Progress, type Tp } from "@/lib/tps";
 
 import { KoraLogo } from "@/components/Logo";
+import { BackButton } from "@/components/BackButton";
 
 export default function TpsPage() {
   const { user } = useAuth();
@@ -29,6 +30,7 @@ export default function TpsPage() {
   return (
     <main className="min-h-dvh">
       <header className="flex items-center gap-3 border-b border-white/8 bg-ink-900/80 px-4 py-2.5">
+        <BackButton fallback="/" />
         <Link href="/" className="flex items-center gap-2 font-bold">
           <KoraLogo size={28} />
         </Link>

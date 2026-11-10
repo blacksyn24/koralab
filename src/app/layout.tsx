@@ -2,6 +2,7 @@ import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
 import type { Metadata, Viewport } from "next";
 import { AuthProvider } from "@/components/auth/AuthProvider";
+import { DialogHost } from "@/components/Dialog";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -28,6 +29,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="fr" className={`${GeistSans.variable} ${GeistMono.variable}`}>
       <body className="font-sans antialiased">
         <AuthProvider>{children}</AuthProvider>
+        <DialogHost />
       </body>
     </html>
   );

@@ -4,6 +4,7 @@ import { Ban, CheckCircle2, Loader2, ShieldCheck, Trash2, User } from "lucide-re
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { deleteUserData, listUsers, updateUser, type UserRow } from "@/lib/tps";
+import { askConfirm } from "@/components/Dialog";
 
 export default function AdminUsers() {
   const { user: me } = useAuth();
@@ -97,7 +98,7 @@ export default function AdminUsers() {
                       <div className="flex justify-end gap-1">
                         <IconBtn
                           title={u.role === "admin" ? "Retirer le rôle admin" : "Nommer administrateur"}
-                          onClick={() => confirm(u.role === "admin" ? `Retirer le rôle admin de ${u.email} ?` : `Nommer ${u.email} administrateur ?`) && act(() => updateUser(u.uid, { role: u.role === "admin" ? "student" : "admin" }), "Rôle mis à jour.")}
+                          onClick={async () => (await askConfirm(u.role === "admin" ? `Retirer le rôle admin de ${u.email} ?` : `Nommer ${u.email} administrateur ?`)) && act(() => updateUser(u.uid, { role: u.role === "admin" ? "student" : "admin" }), "Rôle mis à jour.")}
                         >
                           {u.role === "admin" ? <User size={16} /> : <ShieldCheck size={16} />}
                         </IconBtn>
@@ -110,7 +111,7 @@ export default function AdminUsers() {
                         <IconBtn
                           title="Supprimer le profil et les labs"
                           danger
-                          onClick={() => confirm(`Supprimer le profil et tous les labs de ${u.email} ? Action définitive.`) && act(() => deleteUserData(u.uid), "Profil et labs supprimés.")}
+                          onClick={async () => (await askConfirm(`Supprimer ${u.email} ?`, { message: "Son profil et tous ses labs seront supprimés définitivement.", danger: true })) && act(() => deleteUserData(u.uid), "Profil et labs supprimés.")}
                         >
                           <Trash2 size={16} />
                         </IconBtn>

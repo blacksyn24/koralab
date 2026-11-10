@@ -7,6 +7,7 @@ import { Suspense, useEffect, useState } from "react";
 import { Countdown } from "@/components/hackathon/Countdown";
 import { STATUS_LABEL, getHackathon, getSecrets, leaderboardCsv, removeParticipant, saveHackathon, statusOf, watchLeaderboard, type Hackathon, type Participant } from "@/lib/hackathons";
 import { listUsers, type UserRow } from "@/lib/tps";
+import { askConfirm } from "@/components/Dialog";
 
 function Suivi() {
   const id = useSearchParams().get("id") ?? "";
@@ -33,7 +34,7 @@ function Suivi() {
 
   /** Change les horaires (prolonger / terminer) en gardant épreuves et critères. */
   const reschedule = async (endAt: Date, label: string) => {
-    if (!confirm(label)) return;
+    if (!(await askConfirm(label))) return;
     const checks = await getSecrets(h.id);
     const { id: hid, ...rest } = h;
     await saveHackathon({ ...rest, endAt }, checks, hid);
@@ -165,7 +166,7 @@ function Suivi() {
                   <button
                     title="Exclure ce participant"
                     onClick={async () => {
-                      if (!confirm(`Exclure ${p.name} du hackathon ? Ses scores seront supprimés.`)) return;
+                      if (!(await askConfirm(`Exclure ${p.name} ?`, { message: "Ce participant sera retiré du hackathon et ses scores seront supprimés.", ok: "Exclure", danger: true }))) return;
                       await removeParticipant(h.id, p.uid);
                     }}
                     className="rounded-lg p-1.5 text-ko/80 hover:bg-white/8 hover:text-ko"

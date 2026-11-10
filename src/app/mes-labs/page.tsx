@@ -10,6 +10,8 @@ import { Network } from "@/engine/network";
 import { createLab, deleteLab, listLabs, renameLab, type LabMeta } from "@/lib/labs";
 
 import { KoraLogo } from "@/components/Logo";
+import { askConfirm, askText } from "@/components/Dialog";
+import { BackButton } from "@/components/BackButton";
 
 export default function MesLabsPage() {
   const router = useRouter();
@@ -39,7 +41,7 @@ export default function MesLabsPage() {
 
   const create = async () => {
     if (!user) return;
-    const name = prompt("Nom du nouveau lab :", `Lab du ${new Date().toLocaleDateString("fr-FR")}`);
+    const name = await askText("Nouveau lab", { label: "Nom du lab", defaultValue: `Lab du ${new Date().toLocaleDateString("fr-FR")}`, ok: "Créer" });
     if (!name?.trim()) return;
     setBusy(true);
     try {
@@ -53,14 +55,14 @@ export default function MesLabsPage() {
   };
 
   const rename = async (l: LabMeta) => {
-    const name = prompt("Nouveau nom :", l.name);
+    const name = await askText("Renommer le lab", { label: "Nouveau nom", defaultValue: l.name, ok: "Renommer" });
     if (!name?.trim() || name === l.name) return;
     await renameLab(l.id, name.trim());
     refresh();
   };
 
   const remove = async (l: LabMeta) => {
-    if (!confirm(`Supprimer définitivement « ${l.name} » ?`)) return;
+    if (!(await askConfirm(`Supprimer « ${l.name} » ?`, { message: "Ce lab sera supprimé définitivement.", danger: true }))) return;
     await deleteLab(l.id);
     refresh();
   };
@@ -68,6 +70,7 @@ export default function MesLabsPage() {
   return (
     <main className="min-h-dvh">
       <header className="flex items-center gap-3 border-b border-white/8 bg-ink-900/80 px-4 py-2.5">
+        <BackButton fallback="/tableau-de-bord" />
         <Link href="/" className="flex items-center gap-2 font-bold">
           <KoraLogo size={28} />
         </Link>

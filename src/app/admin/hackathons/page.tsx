@@ -4,6 +4,7 @@ import { BarChart3, Eye, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { STATUS_LABEL, deleteHackathon, listAllHackathons, statusOf, type Hackathon } from "@/lib/hackathons";
+import { askConfirm } from "@/components/Dialog";
 
 const fmt = (d: Date) => d.toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 
@@ -65,7 +66,7 @@ export default function AdminHackathons() {
                 </Link>
                 <button
                   onClick={async () => {
-                    if (!confirm(`Supprimer « ${h.title} », ses épreuves, ses critères et tous les scores ?`)) return;
+                    if (!(await askConfirm(`Supprimer « ${h.title} » ?`, { message: "Ses épreuves, ses critères et tous les scores seront supprimés définitivement.", danger: true }))) return;
                     await deleteHackathon(h.id);
                     refresh();
                   }}

@@ -10,6 +10,7 @@ import type { Check } from "@/engine/checks";
 import { Network } from "@/engine/network";
 import { getHackathon, getSecrets, saveHackathon, type Challenge } from "@/lib/hackathons";
 import { getLab, listLabs, type LabMeta } from "@/lib/labs";
+import { askConfirm } from "@/components/Dialog";
 
 type Form = { title: string; summary: string; description: string; rules: string; startAt: string; endAt: string; published: boolean; challenges: Challenge[] };
 
@@ -199,8 +200,8 @@ function Editor() {
                   <ArrowDown size={16} />
                 </button>
                 <button
-                  onClick={() => {
-                    if (!confirm("Supprimer cette épreuve ?")) return;
+                  onClick={async () => {
+                    if (!(await askConfirm("Supprimer cette épreuve ?", { danger: true }))) return;
                     set({ challenges: form.challenges.filter((_, k) => k !== open) });
                     setOpen(Math.max(0, open - 1));
                   }}

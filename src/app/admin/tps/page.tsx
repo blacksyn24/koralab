@@ -4,6 +4,7 @@ import { Eye, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { deleteTp, listAllTps, saveTp, type Tp } from "@/lib/tps";
+import { askConfirm } from "@/components/Dialog";
 
 export default function AdminTps() {
   const [tps, setTps] = useState<Tp[] | null>(null);
@@ -77,7 +78,7 @@ export default function AdminTps() {
                     <button
                       title="Supprimer"
                       onClick={async () => {
-                        if (!confirm(`Supprimer le TP « ${t.title} » ?`)) return;
+                        if (!(await askConfirm(`Supprimer le TP « ${t.title} » ?`, { danger: true }))) return;
                         await deleteTp(t.id);
                         refresh();
                       }}

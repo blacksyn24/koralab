@@ -11,6 +11,7 @@ import { Leaderboard } from "@/components/hackathon/Leaderboard";
 import { STATUS_LABEL, getHackathon, join, statusOf, watchLeaderboard, type Hackathon, type Participant } from "@/lib/hackathons";
 
 import { KoraMark } from "@/components/Logo";
+import { BackButton } from "@/components/BackButton";
 
 const fmt = (d: Date) => d.toLocaleString("fr-FR", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
 
@@ -71,6 +72,7 @@ function HackathonView() {
   return (
     <main className="min-h-dvh">
       <header className="flex items-center gap-3 border-b border-white/8 bg-ink-900/80 px-4 py-2.5">
+        <BackButton fallback="/hackathons" />
         <Link href="/hackathons" className="flex items-center gap-2 font-bold">
           <KoraMark size={32} />
           Hackathons

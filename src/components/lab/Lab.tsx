@@ -30,6 +30,8 @@ import { LinkEdge, type LinkEdgeData } from "./LinkEdge";
 import { Terminal, type Shell } from "./Terminal";
 
 import { KoraLogo } from "@/components/Logo";
+import { askConfirm, askText } from "@/components/Dialog";
+import { BackButton } from "@/components/BackButton";
 
 const STORAGE = "koralab:lab:v1";
 const nodeTypes = { device: DeviceNode };
@@ -268,8 +270,8 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
     tp.onResult?.(res.filter((r) => r.ok).length, res.length);
   };
 
-  const restartTp = () => {
-    if (!tp || !confirm("Recommencer le TP depuis la topologie de départ ? Votre configuration actuelle sera effacée.")) return;
+  const restartTp = async () => {
+    if (!tp || !(await askConfirm("Recommencer le TP ?", { message: "La topologie de départ sera rechargée et votre configuration actuelle sera effacée.", ok: "Recommencer" }))) return;
     setResults(null);
     resetLab(Network.fromJSON(JSON.parse(tp.initial)));
   };
@@ -278,7 +280,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
   const saveOnline = async () => {
     if (!net) return;
     if (!user) return router.push("/connexion?next=/lab");
-    const name = prompt("Nom du lab :", `Lab du ${new Date().toLocaleDateString("fr-FR")}`);
+    const name = await askText("Enregistrer en ligne", { label: "Nom du lab", defaultValue: `Lab du ${new Date().toLocaleDateString("fr-FR")}`, ok: "Enregistrer" });
     if (!name?.trim()) return;
     try {
       const id = await createLab(user.uid, name.trim(), JSON.stringify(net.toJSON()));
@@ -445,6 +447,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
     <div className="flex h-dvh flex-col">
       {/* En-tête */}
       <header className="flex items-center gap-3 border-b border-white/8 bg-ink-900/80 px-4 py-2.5 backdrop-blur">
+        <BackButton fallback={tp?.backHref ?? (tp ? "/tps" : cloud ? "/mes-labs" : "/")} />
         <Link href="/" className="flex items-center gap-2 font-bold tracking-tight">
           <KoraLogo size={28} />
         </Link>
@@ -483,8 +486,8 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
             </>
           ) : (
             <>
-              <TopButton icon={FilePlus2} label="Nouveau" onClick={() => confirm("Effacer le lab actuel et repartir de zéro ?") && resetLab(new Network())} />
-              <TopButton icon={FlaskConical} label="TP 01" title="Charger la topologie de départ du TP 01" onClick={() => confirm("Remplacer le lab actuel par la topologie du TP 01 ?") && resetLab(starter())} />
+              <TopButton icon={FilePlus2} label="Nouveau" onClick={async () => (await askConfirm("Nouveau lab ?", { message: "Le lab actuel sera effacé et vous repartirez de zéro.", ok: "Effacer et recommencer", danger: true })) && resetLab(new Network())} />
+              <TopButton icon={FlaskConical} label="TP 01" title="Charger la topologie de départ du TP 01" onClick={async () => (await askConfirm("Charger le TP 01 ?", { message: "Le lab actuel sera remplacé par la topologie de départ du TP 01.", ok: "Charger" })) && resetLab(starter())} />
             </>
           )}
           <TopButton icon={Download} label="Exporter" onClick={exportLab} />
