@@ -1,7 +1,8 @@
 // Interpréteur de commandes de style Cisco IOS pour les routeurs et switchs KoraLab.
 // Gère les modes, les abréviations (conf t, sh ip int br), l'aide « ? » et la complétion Tab.
 
-import { isIp, isMask, maskToPrefix, networkOf } from "../ip";
+import { aclKindFromNumber, parseRule, type Acl } from "../acl";
+import { isIp, isMask, maskToPrefix, networkOf, prefixToMask } from "../ip";
 import {
   MODELS,
   Network,
@@ -23,7 +24,8 @@ import {
   type PortMode,
 } from "../network";
 
-type Mode = "user" | "priv" | "config" | "if" | "line" | "vlan";
+type Mode = "user" | "priv" | "config" | "if" | "line" | "vlan" | "acl" | "dhcp";
+const SUB: Mode[] = ["if", "line", "vlan", "acl", "dhcp"];
 
 type Ctx = { args: string[]; raw: string; cli: IosCli };
 type Cmd = {
@@ -73,6 +75,8 @@ export class IosCli {
   ifNames: string[] = [];
   lineName: string | null = null;
   vlanIds: number[] = [];
+  aclName: string | null = null;
+  poolName: string | null = null;
 
   constructor(public net: Network, public dev: Device) {}
 
@@ -94,7 +98,8 @@ export class IosCli {
       const kind = this.ifNames.length > 1 ? "if-range" : this.ifName && isSubif(this.ifName) ? "subif" : "if";
       return `${h}(config-${kind})#`;
     }
-    return { user: `${h}>`, priv: `${h}#`, config: `${h}(config)#`, line: `${h}(config-line)#`, vlan: `${h}(config-vlan)#` }[this.mode];
+    if (this.mode === "acl") return `${h}(config-${this.dev.acls?.find((a) => a.name === this.aclName)?.extended ? "ext" : "std"}-nacl)#`;
+    return { user: `${h}>`, priv: `${h}#`, config: `${h}(config)#`, line: `${h}(config-line)#`, vlan: `${h}(config-vlan)#`, dhcp: `${h}(dhcp-config)#` }[this.mode as "user"];
   }
 
   /** Texte de la bannière : « banner motd #Accès réservé#  » -> « Accès réservé » */
@@ -113,9 +118,9 @@ export class IosCli {
     { modes: ["user"], words: ["enable"], help: "Passer en mode privilégié", run: ({ cli }) => void (cli.mode = "priv") },
     { modes: PRIV, words: ["disable"], help: "Revenir en mode utilisateur", run: ({ cli }) => void (cli.mode = "user") },
     { modes: PRIV, words: ["configure", "terminal"], help: "Entrer en mode configuration", run: ({ cli }) => ((cli.mode = "config"), "Enter configuration commands, one per line.  End with CNTL/Z.") },
-    { modes: ["user", "priv", "config", "if", "line", "vlan"], words: ["exit"], help: "Quitter le mode actuel", run: ({ cli }) => cli.exit() },
-    { modes: ["config", "if", "line", "vlan"], words: ["end"], help: "Revenir au mode privilégié", run: ({ cli }) => cli.end() },
-    { modes: ["config", "if", "line", "vlan"], words: ["do", "<rest>"], help: "Exécuter une commande du mode privilégié", run: ({ cli, args }) => cli.runAs("priv", args[0]) },
+    { modes: ["user", "priv", "config", ...SUB], words: ["exit"], help: "Quitter le mode actuel", run: ({ cli }) => cli.exit() },
+    { modes: ["config", ...SUB], words: ["end"], help: "Revenir au mode privilégié", run: ({ cli }) => cli.end() },
+    { modes: ["config", ...SUB], words: ["do", "<rest>"], help: "Exécuter une commande du mode privilégié", run: ({ cli, args }) => cli.runAs("priv", args[0]) },
 
     // --- Affichage ---
     { modes: EXEC, words: ["show", "ip", "interface", "brief"], help: "Résumé des interfaces", run: ({ cli }) => cli.showIpIntBrief() },
@@ -189,6 +194,61 @@ export class IosCli {
     // sous-interfaces de routeur
     { modes: IFM, words: ["encapsulation", "dot1q", "<rest>"], help: "VLAN de la sous-interface (ajoutez « native » pour le VLAN natif)", run: ({ cli, args }) => cli.setDot1q(args[0]), only: ["router"] },
     { modes: IFM, words: ["no", "encapsulation", "dot1q"], help: "Retirer l'encapsulation", run: ({ cli }) => cli.each((i) => void ((i.encap = i.native = undefined), cli.net.clearDynamic())), only: ["router"] },
+
+    // --- ACL ---
+    { modes: CONF, words: ["access-list", "<num>", "<rest>"], help: "ACL numérotée (1-99 standard, 100-199 étendue)", run: ({ cli, args }) => cli.numberedAcl(args[0], args[1]), only: NET },
+    { modes: CONF, words: ["no", "access-list", "<num>"], help: "Supprimer une ACL", run: ({ cli, args }) => void (cli.dev.acls = (cli.dev.acls ?? []).filter((a) => a.name !== args[0])), only: NET },
+    { modes: CONF, words: ["ip", "access-list", "standard", "<word>"], help: "ACL standard nommée", run: ({ cli, args }) => cli.enterAcl(args[0], false), only: NET },
+    { modes: CONF, words: ["ip", "access-list", "extended", "<word>"], help: "ACL étendue nommée", run: ({ cli, args }) => cli.enterAcl(args[0], true), only: NET },
+    { modes: CONF, words: ["no", "ip", "access-list", "standard", "<word>"], help: "Supprimer l'ACL", run: ({ cli, args }) => void (cli.dev.acls = (cli.dev.acls ?? []).filter((a) => a.name !== args[0])), only: NET },
+    { modes: CONF, words: ["no", "ip", "access-list", "extended", "<word>"], help: "Supprimer l'ACL", run: ({ cli, args }) => void (cli.dev.acls = (cli.dev.acls ?? []).filter((a) => a.name !== args[0])), only: NET },
+    { modes: ["acl"], words: ["permit", "<rest>"], help: "Autoriser", run: ({ cli, args }) => cli.aclLine(null, `permit ${args[0]}`) },
+    { modes: ["acl"], words: ["deny", "<rest>"], help: "Refuser", run: ({ cli, args }) => cli.aclLine(null, `deny ${args[0]}`) },
+    { modes: ["acl"], words: ["remark", "<rest>"], help: "Commentaire", run: ({ cli, args }) => cli.aclRemark(args[0]) },
+    { modes: ["acl"], words: ["<num>", "<rest>"], help: "Règle avec numéro de séquence", run: ({ cli, args }) => cli.aclLine(Number(args[0]), args[1]) },
+    { modes: ["acl"], words: ["no", "<num>"], help: "Supprimer une règle", run: ({ cli, args }) => cli.aclDelete(Number(args[0])) },
+    { modes: IFM, words: ["ip", "access-group", "<rest>"], help: "Appliquer une ACL (in ou out)", run: ({ cli, args }) => cli.accessGroup(args[0], true), only: NET },
+    { modes: IFM, words: ["no", "ip", "access-group", "<rest>"], help: "Retirer une ACL", run: ({ cli, args }) => cli.accessGroup(args[0], false), only: NET },
+    { modes: EXEC, words: ["show", "access-lists"], help: "ACL et compteurs", run: ({ cli }) => cli.showAcls(), only: NET },
+    { modes: EXEC, words: ["show", "access-lists", "<word>"], help: "Une ACL", run: ({ cli, args }) => cli.showAcls(args[0]), only: NET },
+    { modes: EXEC, words: ["show", "ip", "access-lists"], help: "ACL IP et compteurs", run: ({ cli }) => cli.showAcls(), only: NET },
+    { modes: PRIV, words: ["clear", "access-list", "counters"], help: "Remettre les compteurs à zéro", run: ({ cli }) => void cli.net.clearAclCounters(cli.dev), only: NET },
+    { modes: EXEC, words: ["show", "ip", "interface", "<rest>"], help: "Détail IP d'une interface (ACL, NAT, relais DHCP)", run: ({ cli, args }) => cli.showIpInterface(args[0]) },
+
+    // --- DHCP ---
+    { modes: CONF, words: ["ip", "dhcp", "pool", "<word>"], help: "Pool DHCP", run: ({ cli, args }) => cli.enterPool(args[0]), only: L3 },
+    { modes: CONF, words: ["no", "ip", "dhcp", "pool", "<word>"], help: "Supprimer un pool", run: ({ cli, args }) => void (cli.dev.dhcpPools = (cli.dev.dhcpPools ?? []).filter((p) => p.name !== args[0])), only: L3 },
+    { modes: CONF, words: ["ip", "dhcp", "excluded-address", "<rest>"], help: "Adresses à ne pas distribuer", run: ({ cli, args }) => cli.excluded(args[0], true), only: L3 },
+    { modes: CONF, words: ["no", "ip", "dhcp", "excluded-address", "<rest>"], help: "Retirer une plage exclue", run: ({ cli, args }) => cli.excluded(args[0], false), only: L3 },
+    { modes: ["dhcp"], words: ["network", "<rest>"], help: "Réseau du pool (adresse + masque ou /préfixe)", run: ({ cli, args }) => cli.poolNetwork(args[0]) },
+    { modes: ["dhcp"], words: ["default-router", "<ip>"], help: "Passerelle donnée aux clients", run: ({ cli, args }) => cli.poolSet("router", args[0]) },
+    { modes: ["dhcp"], words: ["dns-server", "<ip>"], help: "Serveur DNS donné aux clients", run: ({ cli, args }) => cli.poolSet("dns", args[0]) },
+    { modes: ["dhcp"], words: ["domain-name", "<word>"], help: "Nom de domaine", run: ({ cli, args }) => cli.poolSet("domain", args[0]) },
+    { modes: ["dhcp"], words: ["lease", "<rest>"], help: "Durée du bail (jours heures minutes)", run: ({ cli, args }) => cli.poolSet("lease", args[0]) },
+    { modes: IFM, words: ["ip", "helper-address", "<ip>"], help: "Relais DHCP vers un serveur", run: ({ cli, args }) => cli.helper(args[0], true), only: L3 },
+    { modes: IFM, words: ["no", "ip", "helper-address"], help: "Supprimer les relais DHCP", run: ({ cli }) => cli.each((i) => void (i.helpers = undefined)), only: L3 },
+    { modes: IFM, words: ["ip", "address", "dhcp"], help: "Obtenir l'adresse par DHCP", run: ({ cli }) => cli.ipDhcp() },
+    { modes: EXEC, words: ["show", "ip", "dhcp", "binding"], help: "Baux DHCP attribués", run: ({ cli }) => cli.showDhcpBinding(), only: L3 },
+    { modes: EXEC, words: ["show", "ip", "dhcp", "pool"], help: "Pools DHCP", run: ({ cli }) => cli.showDhcpPool(), only: L3 },
+    { modes: PRIV, words: ["clear", "ip", "dhcp", "binding", "<rest>"], help: "Effacer des baux (* pour tous)", run: ({ cli, args }) => cli.clearBinding(args[0]), only: L3 },
+
+    // --- NAT ---
+    { modes: IFM, words: ["ip", "nat", "inside"], help: "Interface côté réseau interne", run: ({ cli }) => cli.each((i) => void ((i.nat = "inside"), cli.net.clearNat(cli.dev))), only: ["router"] },
+    { modes: IFM, words: ["ip", "nat", "outside"], help: "Interface côté Internet", run: ({ cli }) => cli.each((i) => void ((i.nat = "outside"), cli.net.clearNat(cli.dev))), only: ["router"] },
+    { modes: IFM, words: ["no", "ip", "nat", "<rest>"], help: "Retirer le rôle NAT", run: ({ cli }) => cli.each((i) => void (i.nat = undefined)), only: ["router"] },
+    { modes: CONF, words: ["ip", "nat", "inside", "source", "static", "<ip>", "<ip>"], help: "NAT statique (local global)", run: ({ cli, args }) => cli.natStatic(args[0], args[1], true), only: ["router"] },
+    { modes: CONF, words: ["no", "ip", "nat", "inside", "source", "static", "<ip>", "<ip>"], help: "Supprimer le NAT statique", run: ({ cli, args }) => cli.natStatic(args[0], args[1], false), only: ["router"] },
+    { modes: CONF, words: ["ip", "nat", "inside", "source", "list", "<word>", "<rest>"], help: "NAT dynamique : pool <nom> [overload] ou interface <if> overload", run: ({ cli, args }) => cli.natRule(args[0], args[1]), only: ["router"] },
+    { modes: CONF, words: ["no", "ip", "nat", "inside", "source", "list", "<word>", "<rest>"], help: "Supprimer la règle NAT", run: ({ cli, args }) => cli.natRuleDelete(args[0]), only: ["router"] },
+    { modes: CONF, words: ["ip", "nat", "pool", "<word>", "<rest>"], help: "Pool NAT : début fin netmask masque (ou prefix-length N)", run: ({ cli, args }) => cli.natPool(args[0], args[1]), only: ["router"] },
+    { modes: CONF, words: ["no", "ip", "nat", "pool", "<word>"], help: "Supprimer le pool NAT", run: ({ cli, args }) => void (cli.natCfg().pools = cli.natCfg().pools.filter((p) => p.name !== args[0])), only: ["router"] },
+    { modes: EXEC, words: ["show", "ip", "nat", "translations"], help: "Table des traductions NAT", run: ({ cli }) => cli.showNat(), only: ["router"] },
+    { modes: EXEC, words: ["show", "ip", "nat", "statistics"], help: "Statistiques NAT", run: ({ cli }) => cli.showNatStats(), only: ["router"] },
+    { modes: PRIV, words: ["clear", "ip", "nat", "translation", "<rest>"], help: "Effacer les traductions dynamiques (*)", run: ({ cli }) => void cli.net.clearNat(cli.dev), only: ["router"] },
+
+    // --- Tests de connexion ---
+    { modes: EXEC, words: ["telnet", "<ip>"], help: "Ouvrir une session telnet", run: ({ cli, args }) => cli.connect(args[0], 23) },
+    { modes: EXEC, words: ["ssh", "<rest>"], help: "Ouvrir une session SSH (ssh -l utilisateur ip)", run: ({ cli, args }) => cli.connect(args[0].split(/\s+/).at(-1) ?? "", 22) },
   ];
 
   /** Commandes acceptées et conservées dans la configuration, sans effet simulé pour l'instant. */
@@ -209,6 +269,7 @@ export class IosCli {
     { modes: ["line"], prefix: ["transport", "input"], help: "Protocoles autorisés (ssh, telnet)" },
     { modes: ["line"], prefix: ["exec-timeout"], help: "Déconnexion automatique" },
     { modes: ["line"], prefix: ["logging", "synchronous"], help: "Messages qui ne coupent pas la saisie" },
+    { modes: ["line"], prefix: ["access-class"], help: "ACL qui filtre les connexions à distance" },
   ];
 
   // ---------- Exécution d'une ligne ----------
@@ -218,7 +279,20 @@ export class IosCli {
     if (!raw.trim()) return "";
     if (raw.trimEnd().endsWith("?")) return this.help(raw.slice(0, -1));
     if (raw.trim().startsWith("!")) return "";
-    return this.dispatch(raw, this.mode) ?? "";
+    const res = this.dispatch(raw, this.mode) ?? "";
+    // Depuis un sous-mode, IOS accepte aussi les commandes de configuration globale
+    if (SUB.includes(this.mode) && /% (Invalid input|Incomplete command)/.test(res)) {
+      const before = this.mode;
+      const alt = this.dispatch(raw, "config") ?? "";
+      if (!/% (Invalid input|Incomplete command)/.test(alt)) {
+        if (this.mode === before) {
+          this.mode = "config";
+          this.resetSub();
+        }
+        return alt;
+      }
+    }
+    return res;
   }
 
   runAs(mode: Mode, line: string): string {
@@ -355,11 +429,9 @@ export class IosCli {
   // ---------- Navigation ----------
 
   exit(): string | void {
-    if (this.mode === "if" || this.mode === "line" || this.mode === "vlan") {
+    if (SUB.includes(this.mode)) {
       this.mode = "config";
-      this.ifNames = [];
-      this.lineName = null;
-      this.vlanIds = [];
+      this.resetSub();
     } else if (this.mode === "config") this.mode = "priv";
     else {
       this.mode = "user";
@@ -367,11 +439,17 @@ export class IosCli {
     }
   }
 
-  end(): string {
-    this.mode = "priv";
+  private resetSub() {
     this.ifNames = [];
     this.lineName = null;
     this.vlanIds = [];
+    this.aclName = null;
+    this.poolName = null;
+  }
+
+  end(): string {
+    this.mode = "priv";
+    this.resetSub();
     return `%SYS-5-CONFIG_I: Configured from console by console`;
   }
 
@@ -596,6 +674,191 @@ export class IosCli {
     return "Destination filename [startup-config]?\nBuilding configuration...\n[OK]";
   }
 
+  // ---------- ACL ----------
+
+  private aclList(): Acl[] {
+    return (this.dev.acls ??= []);
+  }
+
+  private getAcl(name: string, extended: boolean): Acl | string {
+    const acls = this.aclList();
+    let acl = acls.find((a) => a.name === name);
+    if (acl && acl.extended !== extended) return `% ${name} est une ACL ${acl.extended ? "étendue" : "standard"}`;
+    if (!acl) acls.push((acl = { name, extended, rules: [] }));
+    return acl;
+  }
+
+  numberedAcl(num: string, rest: string): string | void {
+    const kind = aclKindFromNumber(Number(num));
+    if (!kind) return INVALID;
+    const acl = this.getAcl(num, kind === "extended");
+    if (typeof acl === "string") return acl;
+    const words = rest.trim().split(/\s+/);
+    if (words[0]?.toLowerCase() === "remark") return void (acl.remarks = [...(acl.remarks ?? []), words.slice(1).join(" ")]);
+    const seq = (acl.rules.at(-1)?.seq ?? 0) + 10;
+    const rule = parseRule(words, acl.extended, seq);
+    if (!rule) {
+      if (!acl.rules.length && !acl.remarks?.length) this.dev.acls = this.aclList().filter((a) => a !== acl);
+      return INVALID;
+    }
+    acl.rules.push(rule);
+  }
+
+  enterAcl(name: string, extended: boolean): string | void {
+    const n = Number(name);
+    if (/^\d+$/.test(name) && aclKindFromNumber(n) !== (extended ? "extended" : "standard")) return INVALID;
+    const acl = this.getAcl(name, extended);
+    if (typeof acl === "string") return acl;
+    this.aclName = name;
+    this.mode = "acl";
+  }
+
+  aclLine(seq: number | null, text: string): string | void {
+    const acl = this.aclList().find((a) => a.name === this.aclName);
+    if (!acl) return;
+    const s = seq ?? (acl.rules.at(-1)?.seq ?? 0) + 10;
+    if (acl.rules.some((r) => r.seq === s)) return "% Duplicate sequence number";
+    const rule = parseRule(text.trim().split(/\s+/), acl.extended, s);
+    if (!rule) return INVALID;
+    acl.rules = [...acl.rules, rule].sort((a, b) => a.seq - b.seq);
+  }
+
+  aclRemark(text: string) {
+    const acl = this.aclList().find((a) => a.name === this.aclName);
+    if (acl) acl.remarks = [...(acl.remarks ?? []), text];
+  }
+
+  aclDelete(seq: number) {
+    const acl = this.aclList().find((a) => a.name === this.aclName);
+    if (acl) acl.rules = acl.rules.filter((r) => r.seq !== seq);
+  }
+
+  accessGroup(rest: string, on: boolean): string | void {
+    const [name, dir] = rest.trim().split(/\s+/);
+    if (!name || (dir !== "in" && dir !== "out")) return INVALID;
+    return this.each((i) => {
+      if (this.net.isSwitchport(this.dev, i)) return INVALID; // sur un switch : SVI ou port routé
+      if (dir === "in") i.aclIn = on ? name : undefined;
+      else i.aclOut = on ? name : undefined;
+    });
+  }
+
+  // ---------- DHCP ----------
+
+  enterPool(name: string) {
+    const pools = (this.dev.dhcpPools ??= []);
+    if (!pools.some((p) => p.name === name)) pools.push({ name });
+    this.poolName = name;
+    this.mode = "dhcp";
+  }
+
+  private pool() {
+    return this.dev.dhcpPools?.find((p) => p.name === this.poolName);
+  }
+
+  poolNetwork(rest: string): string | void {
+    const [ip, m] = rest.trim().split(/\s+/);
+    const mask = m?.startsWith("/") ? prefixToMask(Number(m.slice(1))) : m;
+    if (!isIp(ip) || !mask || !isMask(mask)) return INVALID;
+    const p = this.pool();
+    if (!p) return;
+    p.network = networkOf(ip, mask);
+    p.mask = mask;
+  }
+
+  poolSet(key: "router" | "dns" | "domain" | "lease", value: string): string | void {
+    if ((key === "router" || key === "dns") && !isIp(value)) return INVALID;
+    const p = this.pool();
+    if (p) p[key] = value;
+  }
+
+  excluded(rest: string, add: boolean): string | void {
+    const [a, b = a] = rest.trim().split(/\s+/);
+    if (!isIp(a) || !isIp(b)) return INVALID;
+    const list = (this.dev.dhcpExcluded ??= []).filter(([x, y]) => !(x === a && y === b));
+    this.dev.dhcpExcluded = add ? [...list, [a, b]] : list;
+  }
+
+  helper(ip: string, add: boolean): string | void {
+    if (!isIp(ip)) return INVALID;
+    return this.each((i) => {
+      if (this.net.isSwitchport(this.dev, i)) return INVALID;
+      i.helpers = add ? [...new Set([...(i.helpers ?? []), ip])] : undefined;
+    });
+  }
+
+  ipDhcp(): string | void {
+    const i = this.iface;
+    if (!i || this.net.isSwitchport(this.dev, i)) return INVALID;
+    i.dhcp = true;
+    const ack = this.net.dhcpRequest(this.dev, i.name);
+    if (ack?.op === "ack") return `%DHCP-6-ADDRESS_ASSIGN: Interface ${i.name} assigned DHCP address ${ack.yiaddr}, mask ${ack.mask}, hostname ${this.dev.hostname}`;
+  }
+
+  clearBinding(rest: string) {
+    const ip = rest.trim();
+    this.dev.dhcpLeases = ip === "*" ? [] : (this.dev.dhcpLeases ?? []).filter((l) => l.ip !== ip);
+  }
+
+  // ---------- NAT ----------
+
+  natCfg() {
+    return (this.dev.nat ??= { statics: [], pools: [], rules: [] });
+  }
+
+  natStatic(local: string, global: string, add: boolean): string | void {
+    if (!isIp(local) || !isIp(global)) return INVALID;
+    const n = this.natCfg();
+    n.statics = n.statics.filter((x) => x.local !== local && x.global !== global);
+    if (add) n.statics.push({ local, global });
+    this.net.clearNat(this.dev);
+  }
+
+  natRule(acl: string, rest: string): string | void {
+    const t = rest.trim().split(/\s+/);
+    const overload = t.at(-1)?.toLowerCase() === "overload";
+    let rule: { acl: string; pool?: string; iface?: string; overload: boolean } | null = null;
+    if ("pool".startsWith(t[0]?.toLowerCase() ?? "~") && t[1]) rule = { acl, pool: t[1], overload };
+    else if ("interface".startsWith(t[0]?.toLowerCase() ?? "~") && t[1]) {
+      const name = resolveIfaceName(this.dev, t.slice(1, overload ? -1 : undefined).join(""));
+      if (!name) return INVALID;
+      rule = { acl, iface: name, overload: true };
+    }
+    if (!rule) return INVALID;
+    const n = this.natCfg();
+    n.rules = [...n.rules.filter((r) => r.acl !== acl), rule];
+    this.net.clearNat(this.dev);
+  }
+
+  natRuleDelete(acl: string) {
+    const n = this.natCfg();
+    n.rules = n.rules.filter((r) => r.acl !== acl);
+    this.net.clearNat(this.dev);
+  }
+
+  natPool(name: string, rest: string): string | void {
+    const t = rest.trim().split(/\s+/);
+    const [start, end] = t;
+    let mask: string | undefined;
+    if (t[2]?.toLowerCase().startsWith("net")) mask = t[3];
+    else if (t[2]?.toLowerCase().startsWith("pre")) mask = prefixToMask(Number(t[3]));
+    if (!isIp(start) || !isIp(end) || !mask || !isMask(mask)) return INVALID;
+    const n = this.natCfg();
+    n.pools = [...n.pools.filter((p) => p.name !== name), { name, start, end, mask }];
+  }
+
+  // ---------- Connexions ----------
+
+  connect(ip: string, port: number): string {
+    if (!isIp(ip)) return "% Unknown command or computer name, or unable to find computer address";
+    const r = this.net.tcpConnect(this.dev, ip, port);
+    const head = `Trying ${ip} ...`;
+    if (r === "open") return `${head} Open\n\n[KoraLab] Connexion ${port === 22 ? "SSH" : "telnet"} établie : le chemin et les ACL laissent passer la session.\n[Connection to ${ip} closed by foreign host]`;
+    if (r === "refused") return `${head}\n% Connection refused by remote host`;
+    if (r === "filtered") return `${head}\n% Destination unreachable; gateway or host down`;
+    return `${head}\n% Connection timed out; remote host not responding`;
+  }
+
   // ---------- Sorties « show » ----------
 
   private status(i: Iface) {
@@ -777,6 +1040,89 @@ export class IosCli {
     ].join("\n");
   }
 
+  showAcls(only?: string): string {
+    const acls = (this.dev.acls ?? []).filter((a) => !only || a.name === only);
+    return acls
+      .map((a) => {
+        const head = `${a.extended ? "Extended" : "Standard"} IP access list ${a.name}`;
+        const rules = a.rules.map((r) => {
+          const hits = this.net.aclMatches(this.dev, a.name, r.seq);
+          return `    ${r.seq} ${r.text}${hits ? ` (${hits} match${hits > 1 ? "es" : ""})` : ""}`;
+        });
+        return [head, ...rules].join("\n");
+      })
+      .join("\n");
+  }
+
+  showIpInterface(raw: string): string {
+    const name = resolveIfaceName(this.dev, raw.trim());
+    const i = name ? this.net.findIface(this.dev, name) : undefined;
+    if (!i) return INVALID;
+    const up = this.net.isUp(this.dev, i);
+    return [
+      `${i.name} is ${!i.adminUp ? "administratively down" : up ? "up" : "down"}, line protocol is ${up ? "up" : "down"}`,
+      i.ip && i.mask ? `  Internet address is ${i.ip}/${maskToPrefix(i.mask)}` : "  Internet protocol processing disabled",
+      ...(i.ip && i.mask ? [`  Broadcast address is 255.255.255.255`, `  Address determined by ${i.dhcp ? "DHCP" : "setup command"}`] : []),
+      `  MTU is 1500 bytes`,
+      `  Helper address is ${i.helpers?.length ? i.helpers.join(", ") : "not set"}`,
+      `  Outgoing access list is ${i.aclOut ?? "not set"}`,
+      `  Inbound  access list is ${i.aclIn ?? "not set"}`,
+      `  Proxy ARP is enabled`,
+      `  Network address translation is ${i.nat ? `enabled, interface in domain ${i.nat}` : "disabled"}`,
+    ].join("\n");
+  }
+
+  showDhcpBinding(): string {
+    const rows = (this.dev.dhcpLeases ?? []).map((l) => `${l.ip.padEnd(18)}${("01" + l.mac.replace(/\./g, "")).replace(/(....)(?=.)/g, "$1.").padEnd(24)}${"--".padEnd(22)}Automatic`);
+    return [`IP address        Client-ID/              Lease expiration      Type`, `                  Hardware address`, ...rows].join("\n");
+  }
+
+  showDhcpPool(): string {
+    return (this.dev.dhcpPools ?? [])
+      .map((p) => {
+        const leased = (this.dev.dhcpLeases ?? []).filter((l) => l.pool === p.name).length;
+        const total = p.mask ? Math.max(0, 2 ** (32 - maskToPrefix(p.mask)) - 2) : 0;
+        return [
+          `Pool ${p.name} :`,
+          ` Utilization mark (high/low)    : 100 / 0`,
+          ` Subnet size (first/next)       : 0 / 0`,
+          ` Total addresses                : ${total}`,
+          ` Leased addresses               : ${leased}`,
+          ` Excluded addresses             : ${(this.dev.dhcpExcluded ?? []).length}`,
+          ` Pending event                  : none`,
+          ` 1 subnet is currently in the pool :`,
+          ` Current index        IP address range                    Leased/Excluded/Total`,
+          ` ${p.network ?? "-"}          ${p.network ?? "-"} - ${p.network ?? "-"}/${p.mask ? maskToPrefix(p.mask) : "-"}       ${leased} / ${(this.dev.dhcpExcluded ?? []).length} / ${total}`,
+          ...(p.router ? [` Default router                 : ${p.router}`] : []),
+          ...(p.dns ? [` DNS server                     : ${p.dns}`] : []),
+        ].join("\n");
+      })
+      .join("\n\n");
+  }
+
+  showNat(): string {
+    const fmt = (ip: string, port?: number) => (port === undefined ? ip : `${ip}:${port}`);
+    const rows = this.net.natTable(this.dev).map((e) => {
+      const outside = e.outside ? fmt(e.outside, e.globalPort === undefined ? undefined : e.localPort) : "---";
+      return `${e.proto.padEnd(6)}${fmt(e.insideGlobal, e.globalPort).padEnd(22)}${fmt(e.insideLocal, e.localPort).padEnd(22)}${outside.padEnd(22)}${outside}`;
+    });
+    return [`Pro   Inside global         Inside local          Outside local         Outside global`, ...rows].join("\n");
+  }
+
+  showNatStats(): string {
+    const all = allIfaces(this.dev);
+    const table = this.net.natTable(this.dev);
+    return [
+      `Total active translations: ${table.length} (${table.filter((e) => e.static).length} static, ${table.filter((e) => !e.static).length} dynamic; ${table.filter((e) => e.globalPort !== undefined).length} extended)`,
+      `Outside interfaces:`,
+      `  ${all.filter((i) => i.nat === "outside").map((i) => i.name).join(", ")}`,
+      `Inside interfaces:`,
+      `  ${all.filter((i) => i.nat === "inside").map((i) => i.name).join(", ")}`,
+      `Dynamic mappings:`,
+      ...(this.dev.nat?.rules ?? []).map((r) => `-- Inside Source\n[Id: 1] access-list ${r.acl} ${r.pool ? `pool ${r.pool}` : `interface ${r.iface}`}${r.overload ? " overload" : ""} refcount ${table.filter((e) => !e.static).length}`),
+    ].join("\n");
+  }
+
   showDescriptions(): string {
     const rows = allIfaces(this.dev).map((i) => {
       const status = !i.adminUp ? "admin down" : this.net.isUp(this.dev, i) ? "up" : "down";
@@ -802,6 +1148,17 @@ export class IosCli {
     for (const l of d.extra) if (!l.startsWith("crypto")) out.push(hide(l));
     if (d.extra.length) out.push("!");
     if (d.kind === "l3switch" && d.ipRouting) out.push("ip routing", "!");
+    for (const [a, b] of d.dhcpExcluded ?? []) out.push(`ip dhcp excluded-address ${a}${b !== a ? ` ${b}` : ""}`);
+    if (d.dhcpExcluded?.length) out.push("!");
+    for (const p of d.dhcpPools ?? []) {
+      out.push(`ip dhcp pool ${p.name}`);
+      if (p.network) out.push(` network ${p.network} ${p.mask}`);
+      if (p.router) out.push(` default-router ${p.router}`);
+      if (p.dns) out.push(` dns-server ${p.dns}`);
+      if (p.domain) out.push(` domain-name ${p.domain}`);
+      if (p.lease) out.push(` lease ${p.lease}`);
+      out.push("!");
+    }
     for (const v of d.vlans ?? []) {
       out.push(`vlan ${v.id}`);
       if (v.name !== `VLAN${String(v.id).padStart(4, "0")}`) out.push(` name ${v.name}`);
@@ -821,7 +1178,11 @@ export class IosCli {
         if (i.nonegotiate) out.push(" switchport nonegotiate");
       } else {
         if (i.routed) out.push(" no switchport");
-        out.push(i.ip ? ` ip address ${i.ip} ${i.mask}` : " no ip address");
+        out.push(i.dhcp ? " ip address dhcp" : i.ip ? ` ip address ${i.ip} ${i.mask}` : " no ip address");
+        for (const h of i.helpers ?? []) out.push(` ip helper-address ${h}`);
+        if (i.aclIn) out.push(` ip access-group ${i.aclIn} in`);
+        if (i.aclOut) out.push(` ip access-group ${i.aclOut} out`);
+        if (i.nat) out.push(` ip nat ${i.nat}`);
       }
       if (!i.adminUp) out.push(" shutdown");
       out.push("!");
@@ -832,8 +1193,23 @@ export class IosCli {
     }
     for (const s of d.svis ?? []) ifaceBlock(s);
     if (d.gateway && isSwitchLike(d)) out.push(`ip default-gateway ${d.gateway}`, "!");
+    for (const p of d.nat?.pools ?? []) out.push(`ip nat pool ${p.name} ${p.start} ${p.end} netmask ${p.mask}`);
+    for (const r of d.nat?.rules ?? []) out.push(`ip nat inside source list ${r.acl} ${r.pool ? `pool ${r.pool}` : `interface ${r.iface}`}${r.overload ? " overload" : ""}`);
+    for (const st of d.nat?.statics ?? []) out.push(`ip nat inside source static ${st.local} ${st.global}`);
+    if (d.nat && (d.nat.pools.length || d.nat.rules.length || d.nat.statics.length)) out.push("!");
     for (const r of d.routes) out.push(`ip route ${r.network} ${r.mask} ${r.nextHop ?? r.iface}`);
     if (d.routes.length) out.push("!");
+    for (const a of d.acls ?? []) {
+      if (/^\d+$/.test(a.name)) {
+        for (const r of a.remarks ?? []) out.push(`access-list ${a.name} remark ${r}`);
+        for (const r of a.rules) out.push(`access-list ${a.name} ${r.cfg}`);
+      } else {
+        out.push(`ip access-list ${a.extended ? "extended" : "standard"} ${a.name}`);
+        for (const r of a.remarks ?? []) out.push(` remark ${r}`);
+        for (const r of a.rules) out.push(` ${r.cfg}`);
+      }
+      out.push("!");
+    }
     for (const [name, block] of Object.entries(d.lines ?? {})) {
       out.push(name, ...block.map((l) => (pw ? l.replace(/^ password (?!7 )(\S+)$/, " password 7 0822455D0A16") : l)), "!");
     }

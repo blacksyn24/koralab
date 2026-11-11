@@ -19,7 +19,7 @@ export class PcCli {
   }
 
   complete(line: string) {
-    const words = ["ipconfig", "ping", "tracert", "ip", "help", "arp"];
+    const words = ["ipconfig", "ping", "tracert", "ip", "help", "arp", "telnet", "ssh"];
     const m = words.filter((w) => w.startsWith(line.trim().toLowerCase()));
     return m.length === 1 && !line.includes(" ") ? `${m[0]} ` : line;
   }
@@ -35,15 +35,27 @@ export class PcCli {
           "Commandes disponibles :",
           "  ipconfig            Afficher la configuration IP",
           "  ipconfig /all       Configuration détaillée (MAC, DNS…)",
+          "  ipconfig /renew     Obtenir une adresse par DHCP",
+          "  ipconfig /release   Rendre l'adresse DHCP",
           "  ip <IP> <masque> [passerelle]   Configurer l'adresse (ex. ip 192.168.1.10 255.255.255.0 192.168.1.1)",
           "  ip <IP>/<préfixe> [passerelle]  Variante (ex. ip 192.168.1.10/24 192.168.1.1)",
           "  ping <IP>           Tester la connectivité",
           "  tracert <IP>        Suivre le chemin jusqu'à une destination",
           "  arp -a              Table ARP",
+          "  telnet <IP> [port]  Tester une connexion telnet (ou un autre port TCP)",
+          "  ssh -l <user> <IP>  Tester une connexion SSH",
           "  cls                 Effacer l'écran",
         ].join("\n");
-      case "ipconfig":
-        return this.ipconfig(args[0]?.toLowerCase() === "/all");
+      case "ipconfig": {
+        const opt = args[0]?.toLowerCase();
+        if (opt === "/renew") return this.renew();
+        if (opt === "/release") return this.release();
+        return this.ipconfig(opt === "/all");
+      }
+      case "telnet":
+        return this.connect(args[0], Number(args[1] ?? 23));
+      case "ssh":
+        return this.connect(args.at(-1), 22);
       case "ip":
         return this.setIp(args);
       case "ping":
@@ -62,7 +74,7 @@ export class PcCli {
     const n = this.nic;
     const lines = [
       "",
-      "FastEthernet0 Connection:(default port)",
+      `FastEthernet0 Connection:(default port)${n.dhcp ? "   [DHCP]" : ""}`,
       "",
       ...(all ? [`   Physical Address................: ${n.mac.replace(/\./g, "").toUpperCase().replace(/(..)(?!$)/g, "$1-")}`] : []),
       `   IPv4 Address....................: ${n.ip ?? "0.0.0.0"}`,
@@ -71,6 +83,30 @@ export class PcCli {
       ...(all ? [`   DNS Servers.....................: ${this.dev.dns ?? "0.0.0.0"}`] : []),
     ];
     return lines.join("\n");
+  }
+
+  private renew() {
+    this.nic.dhcp = true;
+    const ack = this.net.dhcpRequest(this.dev, this.nic.name);
+    if (!ack) return "\nDHCP request failed : aucun serveur DHCP n'a répondu.\n(Vérifiez le câble, le pool DHCP du routeur ou le relais « ip helper-address ».)";
+    if (ack.op !== "ack") return "\nDHCP request failed : le pool n'a plus d'adresse libre.";
+    return this.ipconfig(false);
+  }
+
+  private release() {
+    this.net.dhcpRelease(this.dev, this.nic.name);
+    return this.ipconfig(false);
+  }
+
+  private connect(dst: string | undefined, port: number) {
+    if (!dst || !isIp(dst) || !Number.isInteger(port)) return "Usage : telnet <adresse IP> [port]   ou   ssh -l <utilisateur> <adresse IP>";
+    if (!this.nic.ip) return "Ce PC n'a pas d'adresse IP.";
+    const r = this.net.tcpConnect(this.dev, dst, port);
+    const head = `Trying ${dst} ...`;
+    if (r === "open") return `${head}Open\n\n[KoraLab] Connexion établie sur le port ${port} : le chemin et les ACL laissent passer la session.\n[Connection to ${dst} closed by foreign host]`;
+    if (r === "refused") return `${head}\n% Connection refused by remote host`;
+    if (r === "filtered") return `${head}\n% Destination unreachable (bloqué par une ACL ou pas de route)`;
+    return `${head}\n% Connection timed out; remote host not responding`;
   }
 
   private setIp(args: string[]) {
@@ -84,6 +120,7 @@ export class PcCli {
     if (gw && !isIp(gw)) return "Passerelle invalide.";
     this.nic.ip = ip;
     this.nic.mask = mask;
+    this.nic.dhcp = undefined;
     this.dev.gateway = gw;
     this.net.clearDynamic();
     return `Adresse configurée : ${ip} ${mask}${gw ? ` · passerelle ${gw}` : ""}`;
@@ -95,7 +132,7 @@ export class PcCli {
     const res = this.net.ping(this.dev, dst, 4);
     const ok = res.filter((r) => r.ok).length;
     const lines = res.map((r) =>
-      r.ok ? `Reply from ${dst}: bytes=32 time<1ms TTL=${r.ttl}` : r.kind === "ttl-exceeded" ? `Reply from ${r.from}: TTL expired in transit.` : "Request timed out."
+      r.ok ? `Reply from ${dst}: bytes=32 time<1ms TTL=${r.ttl}` : r.kind === "ttl-exceeded" ? `Reply from ${r.from}: TTL expired in transit.` : r.kind === "unreachable" ? `Reply from ${r.from}: Destination host unreachable.` : "Request timed out."
     );
     return [
       "",

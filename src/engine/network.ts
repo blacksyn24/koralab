@@ -2,7 +2,8 @@
 // ARP, routage IPv4 (routeurs, sous-interfaces, switchs de couche 3) et ICMP.
 // Tout est simulé dans le navigateur, de façon déterministe (pas de vrai temps).
 
-import { BROADCAST_MAC, ipToInt, isIp, makeMac, maskToPrefix, networkOf, sameSubnet } from "./ip";
+import { firstMatch, type Acl } from "./acl";
+import { BROADCAST_MAC, broadcastOf, intToIp, ipToInt, isIp, makeMac, maskToPrefix, networkOf, sameSubnet } from "./ip";
 
 export type DeviceKind = "router" | "switch" | "l3switch" | "pc";
 
@@ -27,7 +28,18 @@ export type Iface = {
   // --- Sous-interface de routeur ---
   encap?: number; // encapsulation dot1Q <vlan>
   native?: boolean; // encapsulation dot1Q <vlan> native
+  // --- Services IP ---
+  aclIn?: string; // ip access-group <acl> in
+  aclOut?: string; // ip access-group <acl> out
+  nat?: "inside" | "outside"; // ip nat inside / outside
+  helpers?: string[]; // ip helper-address (relais DHCP)
+  dhcp?: boolean; // adresse obtenue par DHCP (ip address dhcp / PC en DHCP)
 };
+
+export type DhcpPool = { name: string; network?: string; mask?: string; router?: string; dns?: string; domain?: string; lease?: string };
+export type NatPool = { name: string; start: string; end: string; mask: string };
+export type NatRule = { acl: string; pool?: string; iface?: string; overload: boolean };
+export type NatConfig = { statics: { local: string; global: string }[]; pools: NatPool[]; rules: NatRule[] };
 
 export type Vlan = { id: number; name: string };
 
@@ -58,15 +70,38 @@ export type Device = {
   lines?: Record<string, string[]>;
   /** Copie de la configuration sauvegardée (copy run start) */
   startup?: string;
+  /** Listes de contrôle d'accès */
+  acls?: Acl[];
+  /** Serveur DHCP : pools, plages exclues et baux attribués */
+  dhcpPools?: DhcpPool[];
+  dhcpExcluded?: [string, string][];
+  dhcpLeases?: { ip: string; mac: string; pool: string }[];
+  /** NAT / PAT */
+  nat?: NatConfig;
 };
 
 export type Link = { id: string; a: { dev: string; iface: string }; b: { dev: string; iface: string } };
 
 type ArpPayload = { op: "req" | "rep"; senderIp: string; senderMac: string; targetIp: string };
 type IcmpType = "echo" | "reply" | "ttl-exceeded" | "unreachable";
-type IpPacket = { src: string; dst: string; ttl: number; icmp: { type: IcmpType; id: number; seq: number } };
+export type DhcpMsg = { op: "discover" | "ack" | "nak"; xid: number; chaddr: string; giaddr?: string; yiaddr?: string; mask?: string; router?: string; dns?: string; server?: string };
+type IpPacket = {
+  src: string;
+  dst: string;
+  ttl: number;
+  proto: "icmp" | "udp" | "tcp";
+  icmp?: { type: IcmpType; id: number; seq: number };
+  sport?: number;
+  dport?: number;
+  dhcp?: DhcpMsg;
+  /** Essai de connexion TCP (test des ACL : telnet, ssh, http…) */
+  tcp?: { flag: "syn" | "synack" | "rst"; id: number };
+};
+const IP_BROADCAST = "255.255.255.255";
 /** Trame Ethernet ; « vlan » = étiquette 802.1Q présente sur le câble (absente = trame non étiquetée). */
 type Frame = ({ type: "arp"; arp: ArpPayload } | { type: "ipv4"; ip: IpPacket }) & { src: string; dst: string; vlan?: number };
+
+export type NatEntry = { proto: string; insideLocal: string; insideGlobal: string; localPort?: number; globalPort?: number; outside?: string; static?: boolean };
 
 export const SVI = "Vlan1";
 
@@ -212,6 +247,9 @@ export class Network {
   private macTables = new Map<string, Map<string, string>>();
   private inbox = new Map<string, { type: IcmpType; id: number; seq: number; from: string; ttl: number }[]>();
   private icmpId = 1;
+  private tcpInbox = new Map<string, { id: number; flag: string; from: string }[]>();
+  private aclHits = new Map<string, number>();
+  private unreachToggle = new Map<string, number>();
 
   // ---------- Construction ----------
 
@@ -588,10 +626,28 @@ export class Network {
       }
       return;
     }
-    const pkt = frame.ip;
-    if (this.ownsIp(dev, pkt.dst)) {
+    let pkt = frame.ip;
+    // DHCP (diffusions UDP 67/68)
+    if (pkt.dhcp && this.handleDhcp(dev, iface, pkt)) return;
+    if (pkt.dst === IP_BROADCAST || (iface.ip && iface.mask && pkt.dst === broadcastOf(iface.ip, iface.mask))) return;
+    // ACL en entrée
+    if (iface.aclIn && !this.aclPermits(dev, iface.aclIn, pkt)) return this.unreachable(dev, iface, pkt);
+    // NAT : retour de l'extérieur vers l'intérieur
+    if (iface.nat === "outside" && dev.kind === "router") pkt = this.natIn(dev, pkt);
+    if (this.ownsIp(dev, pkt.dst)) return this.deliverLocal(dev, pkt);
+    if (!this.routes(dev)) return; // un PC ou un switch de couche 2 ne route pas
+    if (pkt.ttl <= 1) {
+      if (pkt.icmp?.type === "echo" && iface.ip) this.sendIp(dev, { src: iface.ip, dst: pkt.src, ttl: 255, proto: "icmp", icmp: { ...pkt.icmp, type: "ttl-exceeded" } });
+      return;
+    }
+    this.sendIp(dev, { ...pkt, ttl: pkt.ttl - 1 }, iface);
+  }
+
+  /** Paquet destiné à l'équipement lui-même. */
+  private deliverLocal(dev: Device, pkt: IpPacket) {
+    if (pkt.proto === "icmp" && pkt.icmp) {
       if (pkt.icmp.type === "echo") {
-        this.sendIp(dev, { src: pkt.dst, dst: pkt.src, ttl: this.initialTtl(dev), icmp: { ...pkt.icmp, type: "reply" } });
+        this.sendIp(dev, { src: pkt.dst, dst: pkt.src, ttl: this.initialTtl(dev), proto: "icmp", icmp: { ...pkt.icmp, type: "reply" } });
       } else {
         const box = this.inbox.get(dev.id) ?? [];
         box.push({ ...pkt.icmp, from: pkt.src, ttl: pkt.ttl });
@@ -599,12 +655,217 @@ export class Network {
       }
       return;
     }
-    if (!this.routes(dev)) return; // un PC ou un switch de couche 2 ne route pas
-    if (pkt.ttl <= 1) {
-      if (pkt.icmp.type === "echo" && iface.ip) this.sendIp(dev, { src: iface.ip, dst: pkt.src, ttl: 255, icmp: { ...pkt.icmp, type: "ttl-exceeded" } });
-      return;
+    if (pkt.proto === "tcp" && pkt.tcp) {
+      if (pkt.tcp.flag === "syn") {
+        // Un équipement réseau accepte telnet (23) et ssh (22) ; un PC accepte le web (80/443) s'il joue le rôle de serveur
+        const open = dev.kind === "pc" ? [80, 443, 21] : [22, 23];
+        this.sendIp(dev, { src: pkt.dst, dst: pkt.src, ttl: this.initialTtl(dev), proto: "tcp", sport: pkt.dport, dport: pkt.sport, tcp: { flag: open.includes(pkt.dport ?? 0) ? "synack" : "rst", id: pkt.tcp.id } });
+      } else {
+        const box = this.tcpInbox.get(dev.id) ?? [];
+        box.push({ id: pkt.tcp.id, flag: pkt.tcp.flag, from: pkt.src });
+        this.tcpInbox.set(dev.id, box);
+      }
     }
-    this.sendIp(dev, { ...pkt, ttl: pkt.ttl - 1 });
+  }
+
+  /** ICMP « destination injoignable » (ACL ou absence de route), limité comme sur IOS : U.U.U */
+  private unreachable(dev: Device, via: Iface | undefined, pkt: IpPacket) {
+    if (!this.routes(dev) || !via?.ip || pkt.proto === "icmp" && pkt.icmp?.type !== "echo") return;
+    const k = this.unreachToggle.get(dev.id) ?? 0;
+    this.unreachToggle.set(dev.id, k + 1);
+    if (k % 2) return;
+    if (pkt.proto === "icmp") this.sendIp(dev, { src: via.ip, dst: pkt.src, ttl: 255, proto: "icmp", icmp: { ...pkt.icmp!, type: "unreachable" } });
+    else if (pkt.tcp) this.sendIp(dev, { src: via.ip, dst: pkt.src, ttl: 255, proto: "icmp", icmp: { type: "unreachable", id: -pkt.tcp.id, seq: 0 } });
+  }
+
+  // ---------- ACL ----------
+
+  private aclPermits(dev: Device, name: string, pkt: IpPacket): boolean {
+    const acl = dev.acls?.find((a) => a.name === name);
+    if (!acl) return true; // ACL appliquée mais inexistante : tout passe (comme sur IOS)
+    const rule = firstMatch(acl, { src: pkt.src, dst: pkt.dst, proto: pkt.proto, sport: pkt.sport ?? pkt.icmp?.id, dport: pkt.dport, icmpType: pkt.icmp ? { echo: "echo", reply: "echo-reply", unreachable: "unreachable", "ttl-exceeded": "time-exceeded" }[pkt.icmp.type] : undefined });
+    if (rule) {
+      const key = `${dev.id}|${name}|${rule.seq}`;
+      this.aclHits.set(key, (this.aclHits.get(key) ?? 0) + 1);
+    }
+    return rule?.action === "permit";
+  }
+
+  aclMatches(dev: Device, name: string, seq: number): number {
+    return this.aclHits.get(`${dev.id}|${name}|${seq}`) ?? 0;
+  }
+
+  clearAclCounters(dev: Device) {
+    for (const k of [...this.aclHits.keys()]) if (k.startsWith(`${dev.id}|`)) this.aclHits.delete(k);
+  }
+
+  // ---------- NAT / PAT ----------
+
+  private natTables = new Map<string, NatEntry[]>();
+
+  natTable(dev: Device): NatEntry[] {
+    const statics: NatEntry[] = (dev.nat?.statics ?? []).map((s) => ({ proto: "---", insideLocal: s.local, insideGlobal: s.global, static: true }));
+    return [...statics, ...(this.natTables.get(dev.id) ?? [])];
+  }
+
+  clearNat(dev: Device) {
+    this.natTables.delete(dev.id);
+  }
+
+  /** Paquet venant de l'extérieur : adresse (et port) globale -> locale. */
+  private natIn(dev: Device, pkt: IpPacket): IpPacket {
+    const port = pkt.proto === "icmp" ? pkt.icmp?.id : pkt.dport;
+    const dyn = (this.natTables.get(dev.id) ?? []).find((e) => e.insideGlobal === pkt.dst && (e.globalPort === undefined || e.globalPort === port) && (e.proto === pkt.proto || e.globalPort === undefined));
+    if (dyn) {
+      if (dyn.globalPort === undefined) return { ...pkt, dst: dyn.insideLocal };
+      return pkt.proto === "icmp" ? { ...pkt, dst: dyn.insideLocal, icmp: { ...pkt.icmp!, id: dyn.localPort! } } : { ...pkt, dst: dyn.insideLocal, dport: dyn.localPort };
+    }
+    const st = dev.nat?.statics.find((s) => s.global === pkt.dst);
+    return st ? { ...pkt, dst: st.local } : pkt;
+  }
+
+  /** Paquet de l'intérieur qui sort : adresse (et port avec PAT) locale -> globale. */
+  private natOut(dev: Device, pkt: IpPacket, out: Iface): IpPacket {
+    const nat = dev.nat;
+    if (!nat) return pkt;
+    const st = nat.statics.find((s) => s.local === pkt.src);
+    if (st) return { ...pkt, src: st.global };
+    const table = this.natTables.get(dev.id) ?? [];
+    this.natTables.set(dev.id, table);
+    const port = pkt.proto === "icmp" ? pkt.icmp?.id : pkt.sport;
+    for (const rule of nat.rules) {
+      if (!this.aclPermitsQuiet(dev, rule.acl, pkt.src)) continue;
+      // Traduction déjà existante ?
+      const existing = table.find((e) => e.insideLocal === pkt.src && (e.localPort === undefined ? !rule.overload : e.localPort === port && e.proto === pkt.proto));
+      let entry = existing;
+      if (!entry) {
+        let global: string | undefined;
+        if (rule.iface) global = this.findIface(dev, rule.iface)?.ip;
+        else {
+          const pool = nat.pools.find((p) => p.name === rule.pool);
+          if (pool) {
+            const used = new Set(table.filter((e) => e.localPort === undefined).map((e) => e.insideGlobal));
+            for (let n = ipToInt(pool.start)!; n <= ipToInt(pool.end)!; n++) {
+              const cand = intToIp(n);
+              if (rule.overload || !used.has(cand)) {
+                global = cand;
+                break;
+              }
+            }
+          }
+        }
+        if (!global) return pkt; // pool épuisé : pas de traduction (paquet envoyé tel quel)
+        if (rule.overload) {
+          let gp = port ?? 1024;
+          while (table.some((e) => e.insideGlobal === global && e.globalPort === gp && e.proto === pkt.proto)) gp = gp < 1024 ? 1024 : gp + 1;
+          entry = { proto: pkt.proto, insideLocal: pkt.src, insideGlobal: global, localPort: port, globalPort: gp, outside: pkt.dst };
+        } else entry = { proto: "---", insideLocal: pkt.src, insideGlobal: global };
+        table.push(entry);
+      }
+      if (entry.globalPort === undefined) return { ...pkt, src: entry.insideGlobal };
+      return pkt.proto === "icmp" ? { ...pkt, src: entry.insideGlobal, icmp: { ...pkt.icmp!, id: entry.globalPort } } : { ...pkt, src: entry.insideGlobal, sport: entry.globalPort };
+    }
+    void out;
+    return pkt;
+  }
+
+  private aclPermitsQuiet(dev: Device, name: string, src: string): boolean {
+    const acl = dev.acls?.find((a) => a.name === name);
+    if (!acl) return false;
+    return firstMatch(acl, { src, dst: "0.0.0.0", proto: "icmp" })?.action === "permit";
+  }
+
+  // ---------- DHCP ----------
+
+  private dhcpInbox = new Map<string, DhcpMsg>();
+
+  /** Traite un message DHCP reçu. Renvoie true s'il a été consommé. */
+  private handleDhcp(dev: Device, iface: Iface, pkt: IpPacket): boolean {
+    const m = pkt.dhcp!;
+    if (m.op === "discover") {
+      const toMe = pkt.dst === IP_BROADCAST || this.ownsIp(dev, pkt.dst);
+      if (!toMe || dev.kind === "pc" || dev.kind === "switch") return true; // seuls les équipements de couche 3 servent ou relaient
+      const subnetIp = m.giaddr ?? iface.ip;
+      const pool = subnetIp ? (dev.dhcpPools ?? []).find((p) => p.network && p.mask && sameSubnet(p.network, subnetIp, p.mask)) : undefined;
+      if (pool) {
+        const ack = this.dhcpOffer(dev, pool, m);
+        if (m.giaddr) this.sendIp(dev, { src: iface.ip ?? "", dst: m.giaddr, ttl: 255, proto: "udp", sport: 67, dport: 67, dhcp: ack });
+        else this.emitL3(dev, iface.name, { src: iface.mac, dst: m.chaddr, type: "ipv4", ip: { src: iface.ip ?? "0.0.0.0", dst: IP_BROADCAST, ttl: 255, proto: "udp", sport: 67, dport: 68, dhcp: ack } });
+        return true;
+      }
+      // Relais (ip helper-address) : seulement pour une diffusion reçue sur l'interface
+      if (pkt.dst === IP_BROADCAST && iface.ip && iface.helpers?.length && this.routes(dev)) {
+        for (const h of iface.helpers) this.sendIp(dev, { src: iface.ip, dst: h, ttl: 255, proto: "udp", sport: 67, dport: 67, dhcp: { ...m, giaddr: iface.ip } });
+      }
+      return true;
+    }
+    // Réponse du serveur
+    if (m.chaddr === iface.mac && (pkt.dst === IP_BROADCAST || pkt.dst === iface.ip)) {
+      this.dhcpInbox.set(`${dev.id}|${m.xid}`, m);
+      return true;
+    }
+    // Relais : réponse du serveur à renvoyer vers le client
+    if (this.ownsIp(dev, pkt.dst) && m.giaddr) {
+      const back = this.l3Ifaces(dev).find((i) => i.ip === m.giaddr);
+      if (back) this.emitL3(dev, back.name, { src: back.mac, dst: m.chaddr, type: "ipv4", ip: { src: back.ip!, dst: IP_BROADCAST, ttl: 255, proto: "udp", sport: 67, dport: 68, dhcp: m } });
+      return true;
+    }
+    return pkt.dst === IP_BROADCAST;
+  }
+
+  /** Choisit une adresse libre dans le pool (ou celle déjà attribuée au client). */
+  private dhcpOffer(dev: Device, pool: DhcpPool, m: DhcpMsg): DhcpMsg {
+    const leases = (dev.dhcpLeases ??= []);
+    const mine = leases.find((l) => l.mac === m.chaddr && l.pool === pool.name);
+    const server = this.l3Ifaces(dev).find((i) => i.ip)?.ip;
+    const base = { xid: m.xid, chaddr: m.chaddr, giaddr: m.giaddr, mask: pool.mask, router: pool.router, dns: pool.dns, server };
+    if (mine) return { op: "ack", yiaddr: mine.ip, ...base };
+    const net = ipToInt(networkOf(pool.network!, pool.mask!))!;
+    const bc = ipToInt(broadcastOf(pool.network!, pool.mask!))!;
+    const excluded = (n: number) => (dev.dhcpExcluded ?? []).some(([a, b]) => n >= ipToInt(a)! && n <= ipToInt(b)!);
+    const taken = new Set([...leases.map((l) => l.ip), ...this.l3Ifaces(dev).map((i) => i.ip).filter(Boolean)]);
+    for (let n = net + 1; n < bc; n++) {
+      const ip = intToIp(n);
+      if (excluded(n) || taken.has(ip) || ip === pool.router) continue;
+      leases.push({ ip, mac: m.chaddr, pool: pool.name });
+      return { op: "ack", yiaddr: ip, ...base };
+    }
+    return { op: "nak", ...base };
+  }
+
+  /**
+   * Le client (PC ou interface « ip address dhcp ») demande une adresse :
+   * diffusion DHCP sur le réseau, réponse d'un serveur local ou relayée.
+   */
+  dhcpRequest(dev: Device, ifaceName: string): DhcpMsg | null {
+    const iface = this.findIface(dev, ifaceName);
+    if (!iface || !this.isUp(dev, iface)) return null;
+    const xid = this.icmpId++;
+    iface.ip = iface.mask = undefined;
+    this.arp.delete(dev.id); // seules les entrées du client sont oubliées
+    this.emitL3(dev, iface.name, { src: iface.mac, dst: BROADCAST_MAC, type: "ipv4", ip: { src: "0.0.0.0", dst: IP_BROADCAST, ttl: 64, proto: "udp", sport: 68, dport: 67, dhcp: { op: "discover", xid, chaddr: iface.mac } } });
+    this.run();
+    const ack = this.dhcpInbox.get(`${dev.id}|${xid}`);
+    this.dhcpInbox.delete(`${dev.id}|${xid}`);
+    if (!ack || ack.op !== "ack" || !ack.yiaddr) return ack ?? null;
+    iface.ip = ack.yiaddr;
+    iface.mask = ack.mask;
+    if (dev.kind === "pc") {
+      dev.gateway = ack.router;
+      dev.dns = ack.dns;
+    }
+    this.arp.delete(dev.id);
+    return ack;
+  }
+
+  /** Rend l'adresse (ipconfig /release). */
+  dhcpRelease(dev: Device, ifaceName: string) {
+    const iface = this.findIface(dev, ifaceName);
+    if (!iface) return;
+    for (const d of this.devices) d.dhcpLeases = d.dhcpLeases?.filter((l) => l.mac !== iface.mac || l.ip !== iface.ip);
+    iface.ip = iface.mask = undefined;
+    if (dev.kind === "pc") dev.gateway = dev.dns = undefined;
+    this.clearDynamic();
   }
 
   private learnArp(dev: Device, ip: string, mac: string, port: string) {
@@ -617,18 +878,32 @@ export class Network {
     return dev.kind === "pc" ? 128 : 255;
   }
 
-  /** Envoie un paquet IP : routage puis résolution ARP. Retourne false si le paquet est perdu. */
-  private sendIp(dev: Device, pkt: IpPacket): boolean {
+  /**
+   * Envoie un paquet IP : routage, NAT, ACL de sortie puis résolution ARP.
+   * « from » = interface d'entrée quand le paquet est routé (absent s'il est émis par l'équipement).
+   * Retourne false si le paquet est perdu.
+   */
+  private sendIp(dev: Device, pkt: IpPacket, from?: Iface): boolean {
     const r = this.route(dev, pkt.dst);
-    if (!r) return false;
-    const src = pkt.src || r.out.ip!;
+    if (!r) {
+      if (from) this.unreachable(dev, from, pkt);
+      return false;
+    }
+    let out = { ...pkt, src: pkt.src || r.out.ip! };
+    if (from) {
+      if (from.nat === "inside" && r.out.nat === "outside") out = this.natOut(dev, out, r.out);
+      if (r.out.aclOut && !this.aclPermits(dev, r.out.aclOut, out)) {
+        this.unreachable(dev, from, pkt);
+        return false;
+      }
+    }
     const entry = this.arp.get(dev.id)?.get(r.nextHop);
     if (!entry) {
       // Pas d'entrée ARP : on envoie une requête et le paquet est perdu (le « . » du premier ping)
       this.emitL3(dev, r.out.name, { src: r.out.mac, dst: BROADCAST_MAC, type: "arp", arp: { op: "req", senderIp: r.out.ip!, senderMac: r.out.mac, targetIp: r.nextHop } });
       return false;
     }
-    this.emitL3(dev, r.out.name, { src: r.out.mac, dst: entry.mac, type: "ipv4", ip: { ...pkt, src } });
+    this.emitL3(dev, r.out.name, { src: r.out.mac, dst: entry.mac, type: "ipv4", ip: out });
     return true;
   }
 
@@ -658,7 +933,7 @@ export class Network {
         continue;
       }
       this.prepareArp(dev, dst);
-      this.sendIp(dev, { src: "", dst, ttl: this.initialTtl(dev), icmp: { type: "echo", id, seq } });
+      this.sendIp(dev, { src: "", dst, ttl: this.initialTtl(dev), proto: "icmp", icmp: { type: "echo", id, seq } });
       this.run();
       const reply = (this.inbox.get(dev.id) ?? []).find((m) => m.id === id);
       results.push(reply ? { ok: reply.type === "reply", ttl: reply.ttl, from: reply.from, kind: reply.type } : { ok: false });
@@ -677,7 +952,7 @@ export class Network {
         const id = this.icmpId++;
         this.inbox.set(dev.id, []);
         this.prepareArp(dev, dst);
-        this.sendIp(dev, { src: "", dst, ttl, icmp: { type: "echo", id, seq: ttl } });
+        this.sendIp(dev, { src: "", dst, ttl, proto: "icmp", icmp: { type: "echo", id, seq: ttl } });
         this.run();
         const m = (this.inbox.get(dev.id) ?? []).find((x) => x.id === id);
         if (m) {
@@ -689,6 +964,23 @@ export class Network {
       if (done) break;
     }
     return hops;
+  }
+
+  /** Essai de connexion TCP (telnet, ssh, http…) : ouvert, refusé, bloqué par une ACL ou sans réponse. */
+  tcpConnect(dev: Device, dst: string, port: number): "open" | "refused" | "filtered" | "timeout" {
+    if (!isIp(dst)) return "timeout";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const id = this.icmpId++;
+      this.tcpInbox.set(dev.id, []);
+      this.inbox.set(dev.id, []);
+      this.prepareArp(dev, dst);
+      this.sendIp(dev, { src: "", dst, ttl: this.initialTtl(dev), proto: "tcp", sport: 49152 + (id % 16000), dport: port, tcp: { flag: "syn", id } });
+      this.run();
+      const r = (this.tcpInbox.get(dev.id) ?? []).find((m) => m.id === id);
+      if (r) return r.flag === "synack" ? "open" : "refused";
+      if ((this.inbox.get(dev.id) ?? []).some((m) => m.type === "unreachable" && m.id === -id)) return "filtered";
+    }
+    return "timeout";
   }
 
   // ---------- Sauvegarde ----------

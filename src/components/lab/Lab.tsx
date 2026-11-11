@@ -712,6 +712,7 @@ function PcConfig({ dev, net, onChange }: { dev: Device; net: Network; onChange:
       return setMsg("Une valeur est invalide (format attendu : 192.168.1.10).");
     nic.ip = form.ip || undefined;
     nic.mask = form.mask || undefined;
+    nic.dhcp = undefined;
     dev.gateway = form.gw || undefined;
     dev.dns = form.dns || undefined;
     net.clearDynamic();
@@ -732,9 +733,22 @@ function PcConfig({ dev, net, onChange }: { dev: Device; net: Network; onChange:
     </label>
   );
 
+  const dhcp = () => {
+    const ack = net.dhcpRequest(dev, nic.name);
+    nic.dhcp = true;
+    if (!ack) setMsg("Aucun serveur DHCP n'a répondu (câble, pool ou ip helper-address ?).");
+    else if (ack.op !== "ack") setMsg("Le pool DHCP n'a plus d'adresse libre.");
+    else setMsg(`Adresse obtenue par DHCP : ${ack.yiaddr} ✓`);
+    onChange();
+  };
+
   return (
     <div className="w-60 shrink-0 space-y-2.5 overflow-y-auto border-r border-white/8 bg-ink-900/60 p-3">
       <p className="text-sm font-semibold text-white">Configuration IP</p>
+      <button onClick={dhcp} className="w-full rounded-lg py-1.5 text-sm font-semibold text-kora-200 ring-1 ring-white/15 hover:bg-white/5 hover:text-white">
+        {nic.dhcp ? "Renouveler (DHCP)" : "Obtenir par DHCP"}
+      </button>
+      <p className="text-center text-[11px] text-kora-200/50">ou en statique :</p>
       {field("ip", "Adresse IPv4", "192.168.1.10")}
       {field("mask", "Masque", "255.255.255.0")}
       {field("gw", "Passerelle", "192.168.1.1")}
