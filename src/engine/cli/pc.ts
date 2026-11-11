@@ -1,6 +1,7 @@
 // Invite de commandes des PC KoraLab (style Windows) : ipconfig, ping, tracert, et « ip » pour configurer vite.
 
 import { isIp, isMask, parseCidr } from "../ip";
+import { expand6, isIp6, parseCidr6, show6 } from "../ip6";
 import type { Device, Network } from "../network";
 import { IosCli } from "./ios";
 import { SessionHost } from "./session";
@@ -53,6 +54,8 @@ export class PcCli {
           "  ipconfig /release   Rendre l'adresse DHCP",
           "  ip <IP> <masque> [passerelle]   Configurer l'adresse (ex. ip 192.168.1.10 255.255.255.0 192.168.1.1)",
           "  ip <IP>/<préfixe> [passerelle]  Variante (ex. ip 192.168.1.10/24 192.168.1.1)",
+          "  ipv6 <adresse>/<préfixe> [passerelle]   Adresse IPv6 (ex. ipv6 2001:db8:1::10/64 2001:db8:1::1)",
+          "  ipv6 autoconfig     Obtenir une adresse IPv6 par SLAAC",
           "  ping <IP>           Tester la connectivité",
           "  tracert <IP>        Suivre le chemin jusqu'à une destination",
           "  arp -a              Table ARP",
@@ -80,6 +83,8 @@ export class PcCli {
       }
       case "ip":
         return this.setIp(args);
+      case "ipv6":
+        return this.setIp6(args);
       case "ping":
         return this.ping(args[0]);
       case "tracert":
@@ -103,8 +108,31 @@ export class PcCli {
       `   Subnet Mask.....................: ${n.mask ?? "0.0.0.0"}`,
       `   Default Gateway.................: ${this.dev.gateway ?? "0.0.0.0"}`,
       ...(all ? [`   DNS Servers.....................: ${this.dev.dns ?? "0.0.0.0"}`] : []),
+      ...(this.net.v6Addrs(n).length
+        ? [
+            `   Link-local IPv6 Address.........: ${show6(this.net.v6Addrs(n)[0].addr)}`,
+            ...this.net.v6Addrs(n).filter((a) => !a.ll).map((a) => `   IPv6 Address....................: ${show6(a.addr)}/${a.len}`),
+            `   Default Gateway (IPv6)..........: ${this.dev.gateway6 ? show6(this.dev.gateway6) : "::"}`,
+          ]
+        : []),
     ];
     return lines.join("\n");
+  }
+
+  private setIp6(args: string[]) {
+    if (args[0]?.toLowerCase() === "autoconfig") {
+      const r = this.net.slaac(this.dev, this.nic.name);
+      this.net.clearDynamic();
+      return r ? `SLAAC : ${r.addrs.map(show6).join(", ")} · passerelle ${show6(r.router)}` : "Aucun routeur IPv6 n'a répondu (ipv6 unicast-routing et une adresse /64 sur le routeur ?).";
+    }
+    const c = args[0] ? parseCidr6(args[0]) : null;
+    if (!c) return "Usage : ipv6 <adresse>/<préfixe> [passerelle]   ex. ipv6 2001:db8:1::10/64 2001:db8:1::1";
+    if (args[1] && !isIp6(args[1])) return "Passerelle IPv6 invalide.";
+    this.nic.ipv6 = [{ addr: c.addr, len: c.len }];
+    this.nic.ipv6Autoconfig = undefined;
+    this.dev.gateway6 = args[1] ? expand6(args[1])! : undefined;
+    this.net.clearDynamic();
+    return `Adresse IPv6 configurée : ${show6(c.addr)}/${c.len}${args[1] ? ` · passerelle ${show6(args[1])}` : ""}`;
   }
 
   private renew() {
@@ -149,9 +177,12 @@ export class PcCli {
   }
 
   private ping(dst?: string) {
-    if (!dst || !isIp(dst)) return "Usage : ping <adresse IP>";
-    if (!this.nic.ip) return "Ce PC n'a pas d'adresse IP. Configurez-la avec « ip » ou dans l'onglet Configuration.";
-    const res = this.net.ping(this.dev, dst, 4);
+    const v6 = !!dst?.includes(":");
+    if (!dst || (v6 ? !isIp6(dst) : !isIp(dst))) return "Usage : ping <adresse IPv4 ou IPv6>";
+    if (!v6 && !this.nic.ip) return "Ce PC n'a pas d'adresse IP. Configurez-la avec « ip » ou dans l'onglet Configuration.";
+    if (v6 && !this.net.v6Addrs(this.nic).length) return "Ce PC n'a pas d'adresse IPv6 (commande « ipv6 »).";
+    const res = v6 ? this.net.ping6(this.dev, dst, 4) : this.net.ping(this.dev, dst, 4);
+    if (v6) dst = show6(dst);
     const ok = res.filter((r) => r.ok).length;
     const lines = res.map((r) =>
       r.ok ? `Reply from ${dst}: bytes=32 time<1ms TTL=${r.ttl}` : r.kind === "ttl-exceeded" ? `Reply from ${r.from}: TTL expired in transit.` : r.kind === "unreachable" ? `Reply from ${r.from}: Destination host unreachable.` : "Request timed out."
@@ -169,11 +200,13 @@ export class PcCli {
   }
 
   private tracert(dst?: string) {
-    if (!dst || !isIp(dst)) return "Usage : tracert <adresse IP>";
-    if (!this.nic.ip) return "Ce PC n'a pas d'adresse IP.";
-    const hops = this.net.traceroute(this.dev, dst);
-    const lines = hops.map((h, k) => `  ${String(k + 1).padStart(2)}   ${h ? `0 ms     0 ms     1 ms     ${h}` : "*        *        *        Request timed out."}`);
-    const reached = hops.at(-1) === dst;
+    const v6 = !!dst?.includes(":");
+    if (!dst || (v6 ? !isIp6(dst) : !isIp(dst))) return "Usage : tracert <adresse IPv4 ou IPv6>";
+    if (!v6 && !this.nic.ip) return "Ce PC n'a pas d'adresse IP.";
+    const hops = v6 ? this.net.traceroute6(this.dev, dst) : this.net.traceroute(this.dev, dst);
+    const lines = hops.map((h, k) => `  ${String(k + 1).padStart(2)}   ${h ? `0 ms     0 ms     1 ms     ${v6 ? show6(h) : h}` : "*        *        *        Request timed out."}`);
+    const reached = v6 ? hops.at(-1) === expand6(dst) : hops.at(-1) === dst;
+    if (v6) dst = show6(dst);
     return ["", `Tracing route to ${dst} over a maximum of 15 hops:`, "", ...lines, "", reached ? "Trace complete." : "Trace incomplete."].join("\n");
   }
 

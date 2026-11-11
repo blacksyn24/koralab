@@ -4,6 +4,7 @@
 import { aclKindFromNumber, parseRule, type Acl } from "../acl";
 import { SessionHost, lineAuth, lineBlock, localUser } from "./session";
 import { isIp, isMask, maskToPrefix, networkOf, prefixToMask } from "../ip";
+import { expand6, isIp6, isLinkLocal6, network6, parseCidr6, show6, withEui64 } from "../ip6";
 import {
   MODELS,
   Network,
@@ -172,8 +173,10 @@ export class IosCli {
     { modes: EXEC, words: ["show", "cdp", "neighbors"], help: "Voisins directement connectés (CDP)", run: ({ cli }) => cli.showCdp(false), only: NET },
     { modes: EXEC, words: ["show", "cdp", "neighbors", "detail"], help: "Voisins CDP en détail", run: ({ cli }) => cli.showCdp(true), only: NET },
     { modes: EXEC, words: ["show", "version"], help: "Informations système", run: ({ cli }) => cli.showVersion() },
-    { modes: EXEC, words: ["ping", "<ip>"], help: "Tester la connectivité", run: ({ cli, args }) => cli.ping(args[0]) },
+    { modes: EXEC, words: ["ping", "<ip>"], help: "Tester la connectivité (IPv4 ou IPv6)", run: ({ cli, args }) => cli.ping(args[0]) },
+    { modes: EXEC, words: ["ping", "ipv6", "<word>"], help: "Ping IPv6", run: ({ cli, args }) => cli.ping(args[0]) },
     { modes: EXEC, words: ["traceroute", "<ip>"], help: "Suivre le chemin vers une destination", run: ({ cli, args }) => cli.trace(args[0]) },
+    { modes: EXEC, words: ["traceroute", "ipv6", "<word>"], help: "Traceroute IPv6", run: ({ cli, args }) => cli.trace(args[0]) },
     { modes: PRIV, words: ["copy", "running-config", "startup-config"], help: "Sauvegarder la configuration", run: ({ cli }) => cli.save() },
     { modes: PRIV, words: ["write", "memory"], help: "Sauvegarder la configuration", run: ({ cli }) => cli.save() },
     { modes: PRIV, words: ["write"], help: "Sauvegarder la configuration", run: ({ cli }) => cli.save() },
@@ -366,6 +369,22 @@ export class IosCli {
     { modes: EXEC, words: ["show", "ip", "dhcp", "snooping", "binding"], help: "Table des baux observés", run: ({ cli }) => cli.showSnoopBinding(), only: SW },
     { modes: EXEC, words: ["show", "ip", "arp", "inspection"], help: "État de l'inspection ARP", run: ({ cli }) => cli.showDai(), only: SW },
     { modes: EXEC, words: ["show", "interfaces", "status", "err-disabled"], help: "Ports err-disabled", run: ({ cli }) => cli.showErrdis(), only: SW },
+
+    // --- IPv6 ---
+    { modes: CONF, words: ["ipv6", "unicast-routing"], help: "Activer le routage IPv6", run: ({ cli }) => void ((cli.dev.ipv6Routing = true), cli.net.clearDynamic()), only: L3 },
+    { modes: CONF, words: ["no", "ipv6", "unicast-routing"], help: "Désactiver le routage IPv6", run: ({ cli }) => void ((cli.dev.ipv6Routing = undefined), cli.net.clearDynamic()), only: L3 },
+    { modes: CONF, words: ["ipv6", "route", "<word>", "<rest>"], help: "Route statique IPv6 : préfixe/longueur, prochain saut et/ou interface [distance]", run: ({ cli, args }) => cli.route6(args[0], args[1], true), only: L3 },
+    { modes: CONF, words: ["no", "ipv6", "route", "<word>", "<rest>"], help: "Supprimer une route IPv6", run: ({ cli, args }) => cli.route6(args[0], args[1], false), only: L3 },
+    { modes: IFM, words: ["ipv6", "address", "<rest>"], help: "Adresse IPv6 : 2001:db8::1/64 [eui-64], link-local, ou autoconfig", run: ({ cli, args }) => cli.addr6(args[0], true) },
+    { modes: IFM, words: ["no", "ipv6", "address"], help: "Supprimer les adresses IPv6", run: ({ cli }) => cli.each((i) => void ((i.ipv6 = undefined), (i.ll = undefined), (i.ipv6Autoconfig = undefined), cli.net.clearDynamic())) },
+    { modes: IFM, words: ["no", "ipv6", "address", "<rest>"], help: "Supprimer une adresse IPv6", run: ({ cli, args }) => cli.addr6(args[0], false) },
+    { modes: IFM, words: ["ipv6", "enable"], help: "Activer IPv6 (adresse link-local)", run: ({ cli }) => cli.each((i) => void ((i.ipv6Enabled = true), cli.net.clearDynamic())) },
+    { modes: IFM, words: ["no", "ipv6", "enable"], help: "Désactiver IPv6", run: ({ cli }) => cli.each((i) => void (i.ipv6Enabled = undefined)) },
+    { modes: EXEC, words: ["show", "ipv6", "interface", "brief"], help: "Adresses IPv6 des interfaces", run: ({ cli }) => cli.showIpv6Brief() },
+    { modes: EXEC, words: ["show", "ipv6", "interface", "<rest>"], help: "Détail IPv6 d'une interface", run: ({ cli, args }) => cli.showIpv6If(args[0]) },
+    { modes: EXEC, words: ["show", "ipv6", "route"], help: "Table de routage IPv6", run: ({ cli }) => cli.showIpv6Route(), only: L3 },
+    { modes: EXEC, words: ["show", "ipv6", "route", "<word>"], help: "connected ou static", run: ({ cli, args }) => cli.showIpv6Route(args[0]), only: L3 },
+    { modes: EXEC, words: ["show", "ipv6", "neighbors"], help: "Voisins IPv6 (NDP)", run: ({ cli }) => cli.showNd() },
   ];
 
   /** Commandes acceptées et conservées dans la configuration, sans effet simulé pour l'instant. */
@@ -380,7 +399,6 @@ export class IosCli {
     { modes: CONF, prefix: ["security", "passwords", "min-length"], help: "Longueur minimale des mots de passe" },
     { modes: CONF, prefix: ["login", "block-for"], help: "Protection anti force brute" },
     { modes: CONF, prefix: ["ip", "ssh", "version"], help: "Version de SSH" },
-    { modes: CONF, prefix: ["ipv6", "unicast-routing"], help: "Routage IPv6 (bientôt simulé)" },
     { modes: ["line"], prefix: ["password"], help: "Mot de passe de la ligne" },
     { modes: ["line"], prefix: ["login"], help: "Demander une authentification" },
     { modes: ["line"], prefix: ["transport", "input"], help: "Protocoles autorisés (ssh, telnet)" },
@@ -1468,6 +1486,120 @@ export class IosCli {
     return ["Port      Name               Status       Reason", ...rows].join("\n");
   }
 
+  // ---------- IPv6 ----------
+
+  addr6(rest: string, add: boolean): string | void {
+    const t = rest.trim().split(/\s+/);
+    const i = this.iface;
+    if (!i || this.ifNames.length !== 1 || this.net.isSwitchport(this.dev, i)) return INVALID;
+    if (t[0].toLowerCase() === "autoconfig") {
+      if (!add) return void (i.ipv6Autoconfig = undefined);
+      const r = this.net.slaac(this.dev, i.name);
+      this.net.clearDynamic();
+      return r ? "" : "";
+    }
+    if (t[1]?.toLowerCase() === "link-local") {
+      const a = expand6(t[0]);
+      if (!a || !isLinkLocal6(a)) return "% Invalid link-local address";
+      i.ll = add ? a : undefined;
+      this.net.clearDynamic();
+      return;
+    }
+    const c = parseCidr6(t[0]);
+    if (!c) return INVALID;
+    const eui = t[1]?.toLowerCase() === "eui-64";
+    if (eui && c.len !== 64) return "% EUI-64 nécessite un préfixe /64";
+    const addr = eui ? withEui64(c.addr, i.mac) : c.addr;
+    const list = (i.ipv6 ?? []).filter((a) => a.addr !== addr);
+    if (add) {
+      const clash = this.net.l3Ifaces(this.dev).find((x) => x !== i && (x.ipv6 ?? []).some((a) => network6(a.addr, a.len) === network6(addr, c.len)));
+      if (clash) return `% ${show6(network6(addr, c.len))}/${c.len} overlaps with ${clash.name}`;
+      list.push({ addr, len: c.len, eui: eui || undefined });
+    }
+    i.ipv6 = list.length ? list : undefined;
+    this.net.clearDynamic();
+  }
+
+  route6(pfx: string, rest: string, add: boolean): string | void {
+    const c = parseCidr6(pfx);
+    if (!c) return INVALID;
+    const t = rest.trim().split(/\s+/);
+    let ad: number | undefined;
+    if (t.length > 1 && /^\d+$/.test(t.at(-1)!)) ad = Number(t.pop());
+    const nh = isIp6(t.at(-1) ?? "") ? expand6(t.pop()!)! : undefined;
+    const iface = t.length ? resolveIfaceName(this.dev, t.join("")) ?? undefined : undefined;
+    if (t.length && !iface) return INVALID;
+    if (!nh && !iface) return INVALID;
+    if (nh && isLinkLocal6(nh) && !iface) return "% Interface has to be specified for a link-local nexthop";
+    const route = { prefix: network6(c.addr, c.len), len: c.len, nextHop: nh, iface, ad };
+    const same = (r: typeof route) => r.prefix === route.prefix && r.len === route.len && r.nextHop === route.nextHop && r.iface === route.iface;
+    this.dev.routes6 = [...(this.dev.routes6 ?? []).filter((r) => !same(r as typeof route)), ...(add ? [route] : [])];
+    this.net.clearDynamic();
+  }
+
+  showIpv6Brief(): string {
+    return allIfaces(this.dev)
+      .map((i) => {
+        const status = !i.adminUp ? "administratively down/down" : this.net.isUp(this.dev, i) ? "up/up" : "down/down";
+        const addrs = this.net.v6Addrs(i);
+        return [`${i.name.padEnd(23)}[${status}]`, ...(addrs.length ? addrs.map((a) => `    ${show6(a.addr)}`) : ["    unassigned"])].join("\n");
+      })
+      .join("\n");
+  }
+
+  showIpv6If(raw: string): string {
+    const name = resolveIfaceName(this.dev, raw.trim());
+    const i = name ? this.net.findIface(this.dev, name) : undefined;
+    if (!i) return INVALID;
+    const addrs = this.net.v6Addrs(i);
+    const up = this.net.isUp(this.dev, i);
+    if (!addrs.length) return `${i.name} is ${up ? "up" : "down"}, line protocol is ${up ? "up" : "down"}\n  IPv6 is disabled`;
+    return [
+      `${i.name} is ${!i.adminUp ? "administratively down" : up ? "up" : "down"}, line protocol is ${up ? "up" : "down"}`,
+      `  IPv6 is enabled, link-local address is ${show6(addrs[0].addr)}`,
+      `  No Virtual link-local address(es):`,
+      `  Global unicast address(es):`,
+      ...addrs.filter((a) => !a.ll).map((a) => `    ${show6(a.addr)}, subnet is ${show6(network6(a.addr, a.len))}/${a.len}${(i.ipv6 ?? []).find((x) => x.addr === a.addr)?.eui ? " [EUI]" : ""}`),
+      `  Joined group address(es):`,
+      `    FF02::1`,
+      ...(this.net.routes6Enabled(this.dev) ? ["    FF02::2"] : []),
+      `    FF02::1:FF${show6(addrs[0].addr).slice(-7).replace(/^.*:/, "")}`,
+      `  MTU is 1500 bytes`,
+      `  ND reachable time is 30000 milliseconds`,
+    ].join("\n");
+  }
+
+  showIpv6Route(filter?: string): string {
+    const f = filter?.toLowerCase();
+    const best = new Map<string, ReturnType<Network["candidates6"]>[number]>();
+    for (const c of this.net.candidates6(this.dev)) {
+      const key = `${c.prefix}/${c.len}`;
+      const cur = best.get(key);
+      if (!cur || c.ad < cur.ad) best.set(key, c);
+    }
+    let list = [...best.values()];
+    if (f) list = list.filter((c) => ("connected".startsWith(f) ? c.code === "C" || c.code === "L" : "static".startsWith(f) ? c.code === "S" : true));
+    list.sort((a, b) => a.prefix.localeCompare(b.prefix) || a.len - b.len);
+    const rows = list.flatMap((c) => [
+      `${c.code.padEnd(4)}${show6(c.prefix)}/${c.len} [${c.ad}/0]`,
+      c.code === "C" ? `     via ${c.out!.name}, directly connected` : c.code === "L" ? `     via ${c.out!.name}, receive` : `     via ${[c.nextHop ? show6(c.nextHop) : "", c.out && (!c.nextHop || isLinkLocal6(c.nextHop)) ? c.out.name : ""].filter(Boolean).join(", ")}`,
+    ]);
+    return [
+      `IPv6 Routing Table - default - ${list.length + 1} entries`,
+      `Codes: C - Connected, L - Local, S - Static, U - Per-user Static route`,
+      `       B - BGP, R - RIP, H - NHRP, I1 - ISIS L1`,
+      `       O - OSPF Intra, OI - OSPF Inter, OE1 - OSPF ext 1, OE2 - OSPF ext 2`,
+      ...rows,
+      `L   FF00::/8 [0/0]`,
+      `     via Null0, receive`,
+    ].join("\n");
+  }
+
+  showNd(): string {
+    const rows = this.net.ndTable(this.dev).map((e) => `${show6(e.addr).padEnd(42)}0 ${e.mac.padEnd(15)}REACH ${shortIf(e.port)}`);
+    return [`IPv6 Address                              Age Link-layer Addr State Interface`, ...rows].join("\n");
+  }
+
   // ---------- Sorties « show » ----------
 
   private status(i: Iface) {
@@ -1772,6 +1904,7 @@ export class IosCli {
     for (const l of d.extra) if (!l.startsWith("crypto")) out.push(hide(l));
     if (d.extra.length) out.push("!");
     if (d.kind === "l3switch" && d.ipRouting) out.push("ip routing", "!");
+    if (d.ipv6Routing) out.push("ipv6 unicast-routing", "!");
     if (isSwitchLike(d)) {
       out.push(`spanning-tree mode ${d.stp?.mode ?? "pvst"}`);
       if (d.stp?.portfastDefault) out.push("spanning-tree portfast default");
@@ -1831,6 +1964,10 @@ export class IosCli {
         if (i.aclIn) out.push(` ip access-group ${i.aclIn} in`);
         if (i.aclOut) out.push(` ip access-group ${i.aclOut} out`);
         if (i.nat) out.push(` ip nat ${i.nat}`);
+        if (i.ll) out.push(` ipv6 address ${show6(i.ll)} link-local`);
+        for (const a of (i.ipv6 ?? []).filter((x) => !x.auto)) out.push(a.eui ? ` ipv6 address ${show6(network6(a.addr, 64))}/64 eui-64` : ` ipv6 address ${show6(a.addr)}/${a.len}`);
+        if (i.ipv6Autoconfig) out.push(" ipv6 address autoconfig");
+        if (i.ipv6Enabled) out.push(" ipv6 enable");
         if (i.ospfArea) out.push(` ip ospf ${i.ospfArea.pid} area ${i.ospfArea.area}`);
         if (i.ospfCost) out.push(` ip ospf cost ${i.ospfCost}`);
         if (i.ospfPriority !== undefined) out.push(` ip ospf priority ${i.ospfPriority}`);
@@ -1866,6 +2003,8 @@ export class IosCli {
     }
     for (const r of d.routes) out.push(`ip route ${r.network} ${r.mask} ${[r.iface, r.nextHop].filter(Boolean).join(" ")}${r.ad !== undefined ? ` ${r.ad}` : ""}`);
     if (d.routes.length) out.push("!");
+    for (const r of d.routes6 ?? []) out.push(`ipv6 route ${show6(r.prefix)}/${r.len}${r.iface ? ` ${r.iface}` : ""}${r.nextHop ? ` ${show6(r.nextHop)}` : ""}${r.ad !== undefined ? ` ${r.ad}` : ""}`);
+    if (d.routes6?.length) out.push("!");
     for (const a of d.acls ?? []) {
       if (/^\d+$/.test(a.name)) {
         for (const r of a.remarks ?? []) out.push(`access-list ${a.name} remark ${r}`);
@@ -1886,17 +2025,21 @@ export class IosCli {
   }
 
   ping(dst: string): string {
-    if (!isIp(dst)) return "% Unrecognized host or address, or protocol not running.";
-    const res = this.net.ping(this.dev, dst, 5);
+    const v6 = dst.includes(":");
+    if (v6 ? !isIp6(dst) : !isIp(dst)) return "% Unrecognized host or address, or protocol not running.";
+    const res = v6 ? this.net.ping6(this.dev, dst, 5) : this.net.ping(this.dev, dst, 5);
+    if (v6) dst = show6(dst);
     const ok = res.filter((r) => r.ok).length;
     const marks = res.map((r) => (r.ok ? "!" : r.kind === "unreachable" ? "U" : ".")).join("");
     return `Type escape sequence to abort.\nSending 5, 100-byte ICMP Echos to ${dst}, timeout is 2 seconds:\n${marks}\nSuccess rate is ${Math.round((ok / 5) * 100)} percent (${ok}/5)${ok ? ", round-trip min/avg/max = 0/1/2 ms" : ""}`;
   }
 
   trace(dst: string): string {
-    if (!isIp(dst)) return "% Unrecognized host or address, or protocol not running.";
-    const hops = this.net.traceroute(this.dev, dst);
-    const lines = hops.map((h, k) => `  ${String(k + 1).padStart(2)} ${h ? `${h} 0 msec 0 msec 1 msec` : "*  *  *"}`);
+    const v6 = dst.includes(":");
+    if (v6 ? !isIp6(dst) : !isIp(dst)) return "% Unrecognized host or address, or protocol not running.";
+    const hops = v6 ? this.net.traceroute6(this.dev, dst) : this.net.traceroute(this.dev, dst);
+    if (v6) dst = show6(dst);
+    const lines = hops.map((h, k) => `  ${String(k + 1).padStart(2)} ${h ? `${v6 ? show6(h) : h} 0 msec 0 msec 1 msec` : "*  *  *"}`);
     return `Type escape sequence to abort.\nTracing the route to ${dst}\n\n${lines.join("\n")}`;
   }
 }

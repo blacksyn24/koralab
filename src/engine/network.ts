@@ -4,6 +4,7 @@
 
 import { firstMatch, type Acl } from "./acl";
 import { BROADCAST_MAC, broadcastOf, intToIp, ipToInt, isIp, makeMac, maskToPrefix, networkOf, sameSubnet } from "./ip";
+import { expand6, inPrefix6, isLinkLocal6, linkLocal, network6, withEui64 } from "./ip6";
 
 export type DeviceKind = "router" | "switch" | "l3switch" | "pc";
 
@@ -52,7 +53,14 @@ export type Iface = {
   errdis?: string; // cause d'err-disabled persistante (psecure-violation…)
   dhcpTrust?: boolean; // ip dhcp snooping trust
   arpTrust?: boolean; // ip arp inspection trust
+  // --- IPv6 ---
+  ipv6?: { addr: string; len: number; eui?: boolean; auto?: boolean }[];
+  ipv6Enabled?: boolean; // ipv6 enable (link-local seule)
+  ipv6Autoconfig?: boolean; // ipv6 address autoconfig (SLAAC)
+  ll?: string; // adresse link-local configurée à la main
 };
+
+export type Route6 = { prefix: string; len: number; nextHop?: string; iface?: string; ad?: number };
 
 export type StpConfig = { mode?: "pvst" | "rapid-pvst"; priorities?: Record<string, number>; portfastDefault?: boolean; bpduguardDefault?: boolean };
 export type StpPort = { role: "Root" | "Desg" | "Altn"; state: "FWD" | "BLK"; cost: number; prio: number; nbr: number; edge: boolean };
@@ -98,6 +106,10 @@ export type Device = {
   stp?: StpConfig;
   /** Interfaces Port-channel (EtherChannel) */
   portChannels?: Iface[];
+  /** IPv6 : routage, routes statiques, passerelle (PC) */
+  ipv6Routing?: boolean;
+  routes6?: Route6[];
+  gateway6?: string;
   /** DHCP snooping et inspection ARP dynamique */
   snooping?: { enabled: boolean; vlans: number[] };
   dai?: { vlans: number[] };
@@ -143,7 +155,15 @@ type IpPacket = {
 };
 const IP_BROADCAST = "255.255.255.255";
 /** Trame Ethernet ; « vlan » = étiquette 802.1Q présente sur le câble (absente = trame non étiquetée). */
-type Frame = ({ type: "arp"; arp: ArpPayload } | { type: "ipv4"; ip: IpPacket }) & { src: string; dst: string; vlan?: number };
+type Ip6Packet = {
+  src: string;
+  dst: string;
+  hop: number;
+  icmp?: { type: IcmpType; id: number; seq: number };
+  /** Découverte des voisins (NDP) : sollicitation / annonce de voisin et de routeur */
+  nd?: { op: "ns" | "na" | "rs" | "ra"; target?: string; mac: string; prefixes?: { prefix: string; len: number }[] };
+};
+type Frame = ({ type: "arp"; arp: ArpPayload } | { type: "ipv4"; ip: IpPacket } | { type: "ipv6"; ip6: Ip6Packet }) & { src: string; dst: string; vlan?: number };
 
 export type NatEntry = { proto: string; insideLocal: string; insideGlobal: string; localPort?: number; globalPort?: number; outside?: string; static?: boolean };
 
@@ -520,6 +540,7 @@ export class Network {
   }
 
   clearDynamic() {
+    this.nd.clear();
     this.arp.clear();
     this.macTables.clear();
     this.ospfCache = null;
@@ -1215,6 +1236,7 @@ export class Network {
       }
       return;
     }
+    if (frame.type === "ipv6") return this.receive6(dev, iface, frame);
     let pkt = frame.ip;
     // DHCP (diffusions UDP 67/68)
     if (pkt.dhcp && this.handleDhcp(dev, iface, pkt)) return;
@@ -1506,6 +1528,202 @@ export class Network {
     if (!r || this.arp.get(dev.id)?.has(r.nextHop)) return;
     this.emitL3(dev, r.out.name, { src: r.out.mac, dst: BROADCAST_MAC, type: "arp", arp: { op: "req", senderIp: r.out.ip!, senderMac: r.out.mac, targetIp: r.nextHop } });
     this.run();
+  }
+
+  // ---------- IPv6 ----------
+
+  private nd = new Map<string, Map<string, { mac: string; port: string }>>();
+  private raInbox = new Map<string, { router: string; prefixes: { prefix: string; len: number }[] }>();
+
+  /** Adresses IPv6 d'une interface : link-local (si IPv6 est actif) puis globales. */
+  v6Addrs(iface: Iface): { addr: string; len: number; ll: boolean }[] {
+    const on = !!iface.ipv6?.length || iface.ipv6Enabled || iface.ipv6Autoconfig;
+    if (!on) return [];
+    return [{ addr: iface.ll ?? linkLocal(iface.mac), len: 64, ll: true }, ...(iface.ipv6 ?? []).map((a) => ({ addr: a.addr, len: a.len, ll: false }))];
+  }
+
+  routes6Enabled(dev: Device): boolean {
+    return (dev.kind === "router" || dev.kind === "l3switch") && !!dev.ipv6Routing;
+  }
+
+  ndTable(dev: Device) {
+    return [...(this.nd.get(dev.id) ?? new Map()).entries()].map(([addr, e]) => ({ addr, mac: e.mac, port: e.port }));
+  }
+
+  private owns6(dev: Device, addr: string, on?: Iface): boolean {
+    const ifs = on ? [on] : this.l3Ifaces(dev);
+    return ifs.some((i) => this.isUp(dev, i) && this.v6Addrs(i).some((a) => a.addr === addr));
+  }
+
+  /** Routes IPv6 utilisables : connectées, locales, statiques. */
+  candidates6(dev: Device): { code: string; prefix: string; len: number; ad: number; out: Iface | null; nextHop: string | null }[] {
+    const out: { code: string; prefix: string; len: number; ad: number; out: Iface | null; nextHop: string | null }[] = [];
+    for (const i of this.l3Ifaces(dev)) {
+      if (!this.isUp(dev, i)) continue;
+      for (const a of i.ipv6 ?? []) {
+        out.push({ code: "C", prefix: network6(a.addr, a.len), len: a.len, ad: 0, out: i, nextHop: null });
+        out.push({ code: "L", prefix: a.addr, len: 128, ad: 0, out: i, nextHop: null });
+      }
+    }
+    for (const r of dev.routes6 ?? []) {
+      let o: Iface | undefined;
+      if (r.iface) o = this.l3Ifaces(dev).find((i) => i.name === r.iface);
+      else if (r.nextHop && !isLinkLocal6(r.nextHop)) o = this.l3Ifaces(dev).find((i) => this.isUp(dev, i) && (i.ipv6 ?? []).some((a) => inPrefix6(r.nextHop!, a.addr, a.len)));
+      if (o && this.isUp(dev, o) && this.v6Addrs(o).length) out.push({ code: "S", prefix: network6(r.prefix, r.len), len: r.len, ad: r.ad ?? 1, out: o, nextHop: r.nextHop ?? null });
+    }
+    return out;
+  }
+
+  private route6(dev: Device, dst: string): { out: Iface; nextHop: string } | null {
+    const ifs = this.l3Ifaces(dev).filter((i) => this.isUp(dev, i) && this.v6Addrs(i).length);
+    if (!this.routes6Enabled(dev)) {
+      if (!ifs.length) return null;
+      if (isLinkLocal6(dst)) return { out: ifs[0], nextHop: dst };
+      const local = ifs.find((i) => (i.ipv6 ?? []).some((a) => inPrefix6(dst, a.addr, a.len)));
+      if (local) return { out: local, nextHop: dst };
+      return dev.gateway6 ? { out: ifs[0], nextHop: dev.gateway6 } : null;
+    }
+    if (isLinkLocal6(dst)) return null; // une adresse link-local n'est jamais routée
+    let best: { out: Iface; nextHop: string; len: number; ad: number } | null = null;
+    for (const c of this.candidates6(dev)) {
+      if (c.code === "L" || !c.out || !inPrefix6(dst, c.prefix, c.len)) continue;
+      if (!best || c.len > best.len || (c.len === best.len && c.ad < best.ad)) best = { out: c.out, nextHop: c.nextHop ?? dst, len: c.len, ad: c.ad };
+    }
+    return best ? { out: best.out, nextHop: best.nextHop } : null;
+  }
+
+  private srcFor6(out: Iface, dst: string): string {
+    const addrs = this.v6Addrs(out);
+    return (isLinkLocal6(dst) ? addrs.find((a) => a.ll) : addrs.find((a) => !a.ll) ?? addrs[0])?.addr ?? "::";
+  }
+
+  private sendIp6(dev: Device, pkt: Ip6Packet, from?: Iface): boolean {
+    const r = this.route6(dev, pkt.dst);
+    if (!r) return false;
+    const out = { ...pkt, src: pkt.src || this.srcFor6(r.out, pkt.dst) };
+    const entry = this.nd.get(dev.id)?.get(r.nextHop);
+    if (!entry) {
+      this.emitL3(dev, r.out.name, { src: r.out.mac, dst: BROADCAST_MAC, type: "ipv6", ip6: { src: this.srcFor6(r.out, r.nextHop), dst: "ff02::1", hop: 255, nd: { op: "ns", target: r.nextHop, mac: r.out.mac } } });
+      return false;
+    }
+    void from;
+    this.emitL3(dev, r.out.name, { src: r.out.mac, dst: entry.mac, type: "ipv6", ip6: out });
+    return true;
+  }
+
+  private learnNd(dev: Device, addr: string, mac: string, port: string) {
+    let t = this.nd.get(dev.id);
+    if (!t) this.nd.set(dev.id, (t = new Map()));
+    t.set(addr, { mac, port });
+  }
+
+  private receive6(dev: Device, iface: Iface, frame: Frame & { type: "ipv6" }) {
+    const p = frame.ip6;
+    const mine = this.v6Addrs(iface);
+    if (!mine.length) return;
+    if (p.nd) {
+      const nd = p.nd;
+      if (nd.op === "ns" && nd.target && mine.some((a) => a.addr === nd.target)) {
+        this.learnNd(dev, p.src, nd.mac, iface.name);
+        this.emitL3(dev, iface.name, { src: iface.mac, dst: nd.mac, type: "ipv6", ip6: { src: nd.target, dst: p.src, hop: 255, nd: { op: "na", target: nd.target, mac: iface.mac } } });
+      } else if (nd.op === "na" && nd.target) this.learnNd(dev, nd.target, nd.mac, iface.name);
+      else if (nd.op === "rs" && this.routes6Enabled(dev) && iface.ipv6?.length) {
+        const ll = mine.find((a) => a.ll)!.addr;
+        const prefixes = (iface.ipv6 ?? []).filter((a) => a.len === 64).map((a) => ({ prefix: network6(a.addr, 64), len: 64 }));
+        this.emitL3(dev, iface.name, { src: iface.mac, dst: nd.mac, type: "ipv6", ip6: { src: ll, dst: p.src, hop: 255, nd: { op: "ra", mac: iface.mac, prefixes } } });
+      } else if (nd.op === "ra") {
+        this.learnNd(dev, p.src, nd.mac, iface.name);
+        this.raInbox.set(`${dev.id}|${iface.name}`, { router: p.src, prefixes: nd.prefixes ?? [] });
+      }
+      return;
+    }
+    if (this.owns6(dev, p.dst)) {
+      if (p.icmp?.type === "echo") this.sendIp6(dev, { src: p.dst, dst: p.src, hop: dev.kind === "pc" ? 128 : 64, icmp: { ...p.icmp, type: "reply" } });
+      else if (p.icmp) {
+        const box = this.inbox.get(dev.id) ?? [];
+        box.push({ ...p.icmp, from: p.src, ttl: p.hop });
+        this.inbox.set(dev.id, box);
+      }
+      return;
+    }
+    if (!this.routes6Enabled(dev)) return;
+    if (p.hop <= 1) {
+      const src = this.srcFor6(iface, p.src);
+      if (p.icmp?.type === "echo") this.sendIp6(dev, { src, dst: p.src, hop: 64, icmp: { ...p.icmp, type: "ttl-exceeded" } });
+      return;
+    }
+    this.sendIp6(dev, { ...p, hop: p.hop - 1 }, iface);
+  }
+
+  private prepareNd(dev: Device, dst: string) {
+    if (this.routes6Enabled(dev)) return;
+    const r = this.route6(dev, dst);
+    if (!r || this.nd.get(dev.id)?.has(r.nextHop)) return;
+    this.emitL3(dev, r.out.name, { src: r.out.mac, dst: BROADCAST_MAC, type: "ipv6", ip6: { src: this.srcFor6(r.out, r.nextHop), dst: "ff02::1", hop: 255, nd: { op: "ns", target: r.nextHop, mac: r.out.mac } } });
+    this.run();
+  }
+
+  ping6(dev: Device, dst: string, count = 5): { ok: boolean; ttl?: number; from?: string; kind?: IcmpType }[] {
+    const target = expand6(dst);
+    const results: { ok: boolean; ttl?: number; from?: string; kind?: IcmpType }[] = [];
+    if (!target) return results;
+    for (let seq = 0; seq < count; seq++) {
+      const id = this.icmpId++;
+      this.inbox.set(dev.id, []);
+      if (this.owns6(dev, target)) {
+        results.push({ ok: true, ttl: 64, from: target });
+        continue;
+      }
+      this.prepareNd(dev, target);
+      this.sendIp6(dev, { src: "", dst: target, hop: dev.kind === "pc" ? 128 : 64, icmp: { type: "echo", id, seq } });
+      this.run();
+      const reply = (this.inbox.get(dev.id) ?? []).find((m) => m.id === id);
+      results.push(reply ? { ok: reply.type === "reply", ttl: reply.ttl, from: reply.from, kind: reply.type } : { ok: false });
+    }
+    return results;
+  }
+
+  traceroute6(dev: Device, dst: string, maxHops = 15): (string | null)[] {
+    const target = expand6(dst);
+    const hops: (string | null)[] = [];
+    if (!target) return hops;
+    for (let hop = 1; hop <= maxHops; hop++) {
+      let found: string | null = null;
+      let done = false;
+      for (let attempt = 0; attempt < 2 && !found; attempt++) {
+        const id = this.icmpId++;
+        this.inbox.set(dev.id, []);
+        this.prepareNd(dev, target);
+        this.sendIp6(dev, { src: "", dst: target, hop, icmp: { type: "echo", id, seq: hop } });
+        this.run();
+        const m = (this.inbox.get(dev.id) ?? []).find((x) => x.id === id);
+        if (m) {
+          found = m.from;
+          done = m.type === "reply";
+        }
+      }
+      hops.push(found);
+      if (done) break;
+    }
+    return hops;
+  }
+
+  /** SLAAC : sollicitation de routeur, puis adresse = préfixe annoncé + EUI-64 et passerelle = routeur. */
+  slaac(dev: Device, ifaceName: string): { addrs: string[]; router: string } | null {
+    const iface = this.findIface(dev, ifaceName);
+    if (!iface || !this.isUp(dev, iface)) return null;
+    iface.ipv6Autoconfig = true;
+    iface.ipv6 = (iface.ipv6 ?? []).filter((a) => !a.auto);
+    this.raInbox.delete(`${dev.id}|${iface.name}`);
+    const ll = this.v6Addrs(iface)[0].addr;
+    this.emitL3(dev, iface.name, { src: iface.mac, dst: BROADCAST_MAC, type: "ipv6", ip6: { src: ll, dst: "ff02::2", hop: 255, nd: { op: "rs", mac: iface.mac } } });
+    this.run();
+    const ra = this.raInbox.get(`${dev.id}|${iface.name}`);
+    if (!ra) return null;
+    const addrs = ra.prefixes.map((p) => withEui64(p.prefix, iface.mac));
+    iface.ipv6 = [...(iface.ipv6 ?? []), ...addrs.map((addr) => ({ addr, len: 64, eui: true, auto: true }))];
+    if (dev.kind === "pc") dev.gateway6 = ra.router;
+    return { addrs, router: ra.router };
   }
 
   // ---------- Outils de diagnostic ----------
