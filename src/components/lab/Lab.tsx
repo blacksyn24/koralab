@@ -13,7 +13,7 @@ import {
   type Node,
   type NodeChange,
 } from "@xyflow/react";
-import { BookOpen, Boxes, Cable, CheckCircle2, CircleHelp, Cloud, CloudCheck, CloudOff, Download, FilePlus2, FlaskConical, Loader2, Lock, Monitor, MousePointer2, Network as SwitchIcon, RotateCcw, Router, Server, Trash2, Upload, X, XCircle } from "lucide-react";
+import { BookOpen, Boxes, Cable, CheckCircle2, CircleHelp, Cloud, CloudCheck, CloudOff, Download, FilePlus2, FlaskConical, Layers, Loader2, Lock, Monitor, MousePointer2, Network as SwitchIcon, RotateCcw, Router, Server, Trash2, Upload, X, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -90,13 +90,16 @@ export function Lab({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
 }
 
 /** Bibliothèque d'équipements, classés par constructeur. */
-const LIBRARY: { vendor: string; color: string; items: { kind: DeviceKind; label: string; icon: typeof Router; soon?: boolean }[] }[] = [
+const LIBRARY: { vendor: string; color: string; items: { kind: DeviceKind; model?: string; label: string; detail?: string; icon: typeof Router; soon?: boolean }[] }[] = [
   {
     vendor: "Cisco (simulé)",
     color: "text-sky-300",
     items: [
-      { kind: "router", label: "Routeur KR-4300", icon: Router },
-      { kind: "switch", label: "Switch KS-24", icon: SwitchIcon },
+      { kind: "router", model: "KR-4300", label: "Routeur KR-4300", detail: "3 ports Gigabit", icon: Router },
+      { kind: "switch", model: "KS-24", label: "Switch L2 KS-24", detail: "24 Fa + 2 Gi", icon: SwitchIcon },
+      { kind: "switch", model: "KS-48", label: "Switch L2 KS-48", detail: "48 Fa + 2 Gi", icon: SwitchIcon },
+      { kind: "l3switch", model: "KX-24", label: "Switch L3 KX-24", detail: "24 Gi + 4 uplinks", icon: Layers },
+      { kind: "l3switch", model: "KX-48", label: "Switch L3 KX-48", detail: "48 Gi + 4 uplinks", icon: Layers },
     ],
   },
   {
@@ -116,7 +119,7 @@ const LIBRARY: { vendor: string; color: string; items: { kind: DeviceKind; label
     vendor: "Génériques",
     color: "text-emerald-300",
     items: [
-      { kind: "pc", label: "PC", icon: Monitor },
+      { kind: "pc", model: "PC", label: "PC", detail: "1 carte réseau", icon: Monitor },
       { kind: "pc", label: "Serveur", icon: Server, soon: true },
     ],
   },
@@ -349,10 +352,10 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
     setActive((a) => (a === id ? (open.filter((x) => x !== id).at(-1) ?? null) : a));
   };
 
-  const addDevice = (kind: DeviceKind) => {
+  const addDevice = (kind: DeviceKind, model?: string) => {
     if (!net) return;
     const center = flow.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight * 0.32 });
-    const d = net.addDevice(kind, Math.round(center.x - 56 + (Math.random() * 80 - 40)), Math.round(center.y - 40 + (Math.random() * 60 - 30)));
+    const d = net.addDevice(kind, Math.round(center.x - 56 + (Math.random() * 80 - 40)), Math.round(center.y - 40 + (Math.random() * 60 - 30)), model);
     bump();
     notify(`${d.hostname} ajouté. Utilisez l'outil Câble pour le relier.`);
   };
@@ -526,12 +529,13 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
                     <button
                       key={it.label}
                       disabled={it.soon}
-                      onClick={() => addDevice(it.kind)}
+                      onClick={() => addDevice(it.kind, it.model)}
                       title={it.soon ? "Bientôt disponible" : `Ajouter : ${it.label}`}
                       className="relative flex flex-col items-center gap-1 rounded-xl bg-white/[.05] px-2 py-2.5 text-center text-[11px] leading-tight text-kora-50 ring-1 ring-white/8 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       <it.icon size={20} strokeWidth={1.7} />
                       {it.label}
+                      {it.detail && <span className="text-[9.5px] text-kora-200/60">{it.detail}</span>}
                       {it.soon && (
                         <span className="absolute right-1 top-1 flex items-center gap-0.5 text-[9px] text-kora-200">
                           <Lock size={9} /> bientôt

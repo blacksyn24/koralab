@@ -1,7 +1,7 @@
 // Vérification automatique des TP : chaque critère est testé sur le réseau simulé de l'étudiant.
 
 import { isIp } from "./ip";
-import { Network, SVI, shortIf, type Device } from "./network";
+import { Network, findIfaceOn, shortIf, type Device } from "./network";
 
 export type Check =
   | { type: "hostname"; device: string; value: string }
@@ -42,7 +42,7 @@ export function describe(c: Check, name: (id: string) => string): string {
 }
 
 function iface(dev: Device, name: string) {
-  return name === SVI ? dev.svi : dev.ifaces.find((i) => i.name === name);
+  return findIfaceOn(dev, name);
 }
 
 /** Teste tous les critères. Les équipements sont retrouvés par identifiant (le nom peut avoir changé). */

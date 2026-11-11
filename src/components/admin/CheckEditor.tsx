@@ -2,7 +2,7 @@
 
 import { Plus, Trash2 } from "lucide-react";
 import { CHECK_TYPES, describe, type Check } from "@/engine/checks";
-import { SVI, type Device } from "@/engine/network";
+import { allIfaces, type Device } from "@/engine/network";
 
 export function blankCheck(type: Check["type"], device: string): Check {
   switch (type) {
@@ -32,7 +32,7 @@ export function CheckEditor({ checks, devices, onChange }: { checks: Check[]; de
     <div className="space-y-3">
       {checks.map((c, i) => {
         const dev = devices.find((d) => d.id === c.device);
-        const ifaces = dev ? [...dev.ifaces.map((x) => x.name), ...(dev.svi ? [SVI] : [])] : [];
+        const ifaces = dev ? allIfaces(dev).map((x) => x.name) : [];
         return (
           <div key={i} className="space-y-2 rounded-xl bg-ink-900/70 p-3 ring-1 ring-white/8">
             <div className="flex flex-wrap items-center gap-2">

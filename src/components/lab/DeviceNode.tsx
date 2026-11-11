@@ -1,15 +1,16 @@
 "use client";
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { Monitor, Network as SwitchIcon, Router } from "lucide-react";
+import { Layers, Monitor, Network as SwitchIcon, Router } from "lucide-react";
 import type { DeviceKind } from "@/engine/network";
 
 export type DeviceNodeData = { kind: DeviceKind; hostname: string; model: string; picked: boolean; cableMode: boolean };
 
-const ICONS = { router: Router, switch: SwitchIcon, pc: Monitor };
+const ICONS = { router: Router, switch: SwitchIcon, l3switch: Layers, pc: Monitor };
 const COLORS = {
   router: "from-kora-400 to-kora-500",
   switch: "from-sky-400 to-cyan-600",
+  l3switch: "from-indigo-400 to-violet-600",
   pc: "from-slate-400 to-slate-600",
 };
 
