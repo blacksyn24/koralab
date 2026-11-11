@@ -763,19 +763,33 @@ function PcConfig({ dev, net, onChange }: { dev: Device; net: Network; onChange:
 
 function HelpDialog({ onClose }: { onClose: () => void }) {
   const rows: [string, string][] = [
-    ["enable", "Passer en mode privilégié (#)"],
-    ["configure terminal", "Mode configuration (abrégé : conf t)"],
-    ["hostname R1", "Renommer l'équipement"],
-    ["interface g0/0/0", "Configurer une interface"],
-    ["ip address 192.168.1.1 255.255.255.0", "Adresse IP de l'interface"],
-    ["no shutdown", "Activer l'interface (éteinte par défaut sur un routeur)"],
-    ["ip route 10.0.0.0 255.0.0.0 192.168.1.2", "Route statique"],
-    ["interface vlan 1 · ip default-gateway", "Gestion à distance d'un switch"],
-    ["show ip interface brief", "État des interfaces (sh ip int br)"],
-    ["show ip route · show arp · show mac address-table", "Tables de routage, ARP et MAC"],
-    ["show running-config", "Configuration en cours"],
-    ["ping · traceroute", "Tester la connectivité"],
-    ["copy running-config startup-config", "Sauvegarder"],
+    ["— Bases —", ""],
+    ["enable · configure terminal · end", "Modes (abrégés : en, conf t, Ctrl+Z)"],
+    ["hostname · interface · ip address · no shutdown", "Configuration de base"],
+    ["interface range fa0/1 - 10 · interface loopback 0", "Plusieurs ports à la fois, loopback"],
+    ["show ip interface brief · show running-config · show version", "Vérifications"],
+    ["ping · traceroute · copy running-config startup-config · reload", "Tests, sauvegarde, redémarrage"],
+    ["— Switchs —", ""],
+    ["vlan 10 · name VENTES · switchport mode access|trunk", "VLAN, accès et trunks 802.1Q"],
+    ["switchport access vlan · trunk native vlan · trunk allowed vlan", "Affectation et filtrage des VLAN"],
+    ["show vlan brief · show interfaces trunk · show mac address-table", "Vérifier les VLAN"],
+    ["spanning-tree vlan 1 root primary · spanning-tree portfast", "Spanning Tree (show spanning-tree)"],
+    ["channel-group 1 mode active · interface port-channel 1", "EtherChannel (show etherchannel summary)"],
+    ["switchport port-security · ip dhcp snooping · ip arp inspection", "Sécurité des ports"],
+    ["— Routage —", ""],
+    ["interface g0/0/0.10 · encapsulation dot1Q 10", "Router-on-a-stick"],
+    ["ip routing · interface vlan 10 · no switchport", "Switch de couche 3"],
+    ["ip route … [distance] · router ospf 1 · network … area 0", "Statique (flottante) et OSPF"],
+    ["show ip route · show ip ospf neighbor · show ip protocols", "Vérifier le routage"],
+    ["standby 1 ip … · standby 1 priority · preempt", "HSRP (show standby brief)"],
+    ["— Services IP —", ""],
+    ["ip dhcp pool · network · default-router · ip helper-address", "DHCP serveur et relais"],
+    ["access-list · ip access-list extended · ip access-group", "ACL standard et étendues"],
+    ["ip nat inside|outside · ip nat inside source …", "NAT statique, dynamique et PAT"],
+    ["ntp server · logging host · snmp-server · lldp run", "NTP, Syslog, SNMP, CDP/LLDP"],
+    ["— Gestion et IPv6 —", ""],
+    ["enable secret · line vty 0 4 · login local · transport input ssh", "Mots de passe, Telnet et SSH"],
+    ["ipv6 unicast-routing · ipv6 address …/64 · ipv6 route", "IPv6 (show ipv6 route)"],
   ];
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" onClick={onClose}>
@@ -787,7 +801,7 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <ol className="mt-4 list-decimal space-y-1.5 pl-5 text-sm text-kora-200">
-          <li>Ajoutez des équipements avec la barre de gauche (Routeur, Switch, PC).</li>
+          <li>Ajoutez des équipements avec le bouton <b>Équipements</b> : routeur, switchs de couche 2 et de couche 3, PC.</li>
           <li>
             Choisissez l&apos;outil <b>Câble</b>, cliquez sur deux équipements : le câble se branche sur les premiers ports libres. Les voyants sont verts quand le lien est actif.
           </li>
@@ -802,16 +816,24 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
         <h3 className="mt-6 font-semibold">Commandes disponibles (routeurs et switchs)</h3>
         <table className="mt-2 w-full text-sm">
           <tbody>
-            {rows.map(([c, d]) => (
-              <tr key={c} className="border-t border-white/8">
-                <td className="py-1.5 pr-3 font-mono text-kora-300">{c}</td>
-                <td className="py-1.5 text-kora-200/80">{d}</td>
-              </tr>
-            ))}
+            {rows.map(([c, d]) =>
+              d ? (
+                <tr key={c} className="border-t border-white/8">
+                  <td className="py-1.5 pr-3 font-mono text-kora-300">{c}</td>
+                  <td className="py-1.5 text-kora-200/80">{d}</td>
+                </tr>
+              ) : (
+                <tr key={c}>
+                  <td colSpan={2} className="pb-1 pt-4 text-xs font-semibold uppercase tracking-wider text-white">
+                    {c.replace(/—/g, "").trim()}
+                  </td>
+                </tr>
+              )
+            )}
           </tbody>
         </table>
         <p className="mt-4 text-xs text-kora-200/50">
-          Sécurité (enable secret, line, ssh…) : les commandes sont acceptées et apparaissent dans la configuration ; leur effet complet arrive dans une prochaine version.
+          Dans une console, tapez <b>?</b> à tout moment pour voir les commandes possibles à cet endroit.
         </p>
       </div>
     </div>

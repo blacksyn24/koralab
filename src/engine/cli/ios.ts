@@ -88,6 +88,7 @@ export class IosCli {
   /** Session vty fermée (exit / logout) */
   closed = false;
   session: SessionHost;
+  history: string[] = [];
 
   constructor(
     public net: Network,
@@ -385,6 +386,61 @@ export class IosCli {
     { modes: EXEC, words: ["show", "ipv6", "route"], help: "Table de routage IPv6", run: ({ cli }) => cli.showIpv6Route(), only: L3 },
     { modes: EXEC, words: ["show", "ipv6", "route", "<word>"], help: "connected ou static", run: ({ cli, args }) => cli.showIpv6Route(args[0]), only: L3 },
     { modes: EXEC, words: ["show", "ipv6", "neighbors"], help: "Voisins IPv6 (NDP)", run: ({ cli }) => cli.showNd() },
+
+    // --- HSRP ---
+    { modes: IFM, words: ["standby", "<num>", "ip", "<ip>"], help: "Adresse IP virtuelle du groupe HSRP", run: ({ cli, args }) => cli.hsrp(Number(args[0]), (g) => (g.vip = args[1]), args[1]), only: L3 },
+    { modes: IFM, words: ["standby", "<num>", "ip"], help: "Rejoindre le groupe (adresse apprise du routeur actif)", run: ({ cli, args }) => cli.hsrp(Number(args[0]), () => undefined), only: L3 },
+    { modes: IFM, words: ["standby", "<num>", "priority", "<num>"], help: "Priorité (100 par défaut, la plus haute devient active)", run: ({ cli, args }) => cli.hsrp(Number(args[0]), (g) => (g.priority = Number(args[1]))), only: L3 },
+    { modes: IFM, words: ["standby", "<num>", "preempt"], help: "Reprendre le rôle actif dès que possible", run: ({ cli, args }) => cli.hsrp(Number(args[0]), (g) => (g.preempt = true)), only: L3 },
+    { modes: IFM, words: ["standby", "version", "<num>"], help: "Version HSRP (1 ou 2)", run: ({ cli, args }) => cli.hsrpVersion(Number(args[0])), only: L3 },
+    { modes: IFM, words: ["no", "standby", "<rest>"], help: "Retirer HSRP", run: ({ cli, args }) => cli.noHsrp(args[0]), only: L3 },
+    { modes: EXEC, words: ["show", "standby"], help: "État HSRP détaillé", run: ({ cli }) => cli.showStandby(false), only: L3 },
+    { modes: EXEC, words: ["show", "standby", "brief"], help: "État HSRP résumé", run: ({ cli }) => cli.showStandby(true), only: L3 },
+
+    // --- CDP / LLDP ---
+    { modes: CONF, words: ["cdp", "run"], help: "Activer CDP", run: ({ cli }) => void (cli.dev.cdpOff = undefined), only: NET },
+    { modes: CONF, words: ["no", "cdp", "run"], help: "Désactiver CDP", run: ({ cli }) => void (cli.dev.cdpOff = true), only: NET },
+    { modes: IFM, words: ["cdp", "enable"], help: "CDP sur l'interface", run: ({ cli }) => cli.each((i) => void (i.cdpOff = undefined)), only: NET },
+    { modes: IFM, words: ["no", "cdp", "enable"], help: "Pas de CDP sur l'interface", run: ({ cli }) => cli.each((i) => void (i.cdpOff = true)), only: NET },
+    { modes: CONF, words: ["lldp", "run"], help: "Activer LLDP", run: ({ cli }) => void (cli.dev.lldpOn = true), only: NET },
+    { modes: CONF, words: ["no", "lldp", "run"], help: "Désactiver LLDP", run: ({ cli }) => void (cli.dev.lldpOn = undefined), only: NET },
+    { modes: IFM, words: ["lldp", "transmit"], help: "Envoyer LLDP", run: ({ cli }) => cli.each((i) => void (i.lldpTx = undefined)), only: NET },
+    { modes: IFM, words: ["no", "lldp", "transmit"], help: "Ne pas envoyer LLDP", run: ({ cli }) => cli.each((i) => void (i.lldpTx = false)), only: NET },
+    { modes: IFM, words: ["lldp", "receive"], help: "Recevoir LLDP", run: ({ cli }) => cli.each((i) => void (i.lldpRx = undefined)), only: NET },
+    { modes: IFM, words: ["no", "lldp", "receive"], help: "Ne pas recevoir LLDP", run: ({ cli }) => cli.each((i) => void (i.lldpRx = false)), only: NET },
+    { modes: EXEC, words: ["show", "lldp", "neighbors"], help: "Voisins LLDP", run: ({ cli }) => cli.showLldp(), only: NET },
+    { modes: EXEC, words: ["show", "cdp"], help: "État de CDP", run: ({ cli }) => (cli.dev.cdpOff ? "% CDP is not enabled" : "Global CDP information:\n\tSending CDP packets every 60 seconds\n\tSending a holdtime value of 180 seconds\n\tSending CDPv2 advertisements is  enabled"), only: NET },
+
+    // --- Horloge et NTP ---
+    { modes: PRIV, words: ["clock", "set", "<rest>"], help: "Régler l'horloge (hh:mm:ss jour mois année)", run: ({ cli, args }) => cli.clockSet(args[0]), only: NET },
+    { modes: EXEC, words: ["show", "clock"], help: "Heure de l'équipement", run: ({ cli }) => cli.showClock(), only: NET },
+    { modes: CONF, words: ["clock", "timezone", "<word>", "<rest>"], help: "Fuseau horaire (ex. WAT 1)", run: ({ cli, args }) => void (cli.dev.timezone = { name: args[0], hours: Number(args[1].split(/\s+/)[0]) || 0 }), only: NET },
+    { modes: CONF, words: ["ntp", "server", "<ip>"], help: "Serveur de temps", run: ({ cli, args }) => void (cli.dev.ntpServers = [...new Set([...(cli.dev.ntpServers ?? []), args[0]])]), only: NET },
+    { modes: CONF, words: ["no", "ntp", "server", "<ip>"], help: "Retirer le serveur de temps", run: ({ cli, args }) => void (cli.dev.ntpServers = (cli.dev.ntpServers ?? []).filter((x) => x !== args[0])), only: NET },
+    { modes: CONF, words: ["ntp", "master"], help: "Devenir source de temps (strate 8)", run: ({ cli }) => void (cli.dev.ntpMaster = 8), only: L3 },
+    { modes: CONF, words: ["ntp", "master", "<num>"], help: "Devenir source de temps (strate)", run: ({ cli, args }) => void (cli.dev.ntpMaster = Number(args[0]) || 8), only: L3 },
+    { modes: CONF, words: ["no", "ntp", "master"], help: "Ne plus être source de temps", run: ({ cli }) => void (cli.dev.ntpMaster = undefined), only: L3 },
+    { modes: EXEC, words: ["show", "ntp", "status"], help: "Synchronisation NTP", run: ({ cli }) => cli.showNtp(false), only: NET },
+    { modes: EXEC, words: ["show", "ntp", "associations"], help: "Serveurs NTP", run: ({ cli }) => cli.showNtp(true), only: NET },
+
+    // --- Noms, journalisation, SNMP ---
+    { modes: CONF, words: ["ip", "host", "<word>", "<ip>"], help: "Nom d'hôte local", run: ({ cli, args }) => void (cli.dev.hosts = [...(cli.dev.hosts ?? []).filter((h) => h.name !== args[0]), { name: args[0], ip: args[1] }]), only: NET },
+    { modes: CONF, words: ["no", "ip", "host", "<word>"], help: "Supprimer le nom", run: ({ cli, args }) => void (cli.dev.hosts = (cli.dev.hosts ?? []).filter((h) => h.name !== args[0])), only: NET },
+    { modes: EXEC, words: ["show", "hosts"], help: "Noms d'hôtes connus", run: ({ cli }) => cli.showHosts(), only: NET },
+    { modes: EXEC, words: ["show", "logging"], help: "Journal des événements", run: ({ cli }) => cli.showLogging(), only: NET },
+    { modes: PRIV, words: ["clear", "logging"], help: "Vider le journal", run: ({ cli }) => void cli.net.clearLog(cli.dev), only: NET },
+    { modes: EXEC, words: ["show", "snmp"], help: "État de SNMP", run: ({ cli }) => cli.showSnmp(false), only: NET },
+    { modes: EXEC, words: ["show", "snmp", "community"], help: "Communautés SNMP", run: ({ cli }) => cli.showSnmp(true), only: NET },
+
+    // --- Système ---
+    { modes: PRIV, words: ["reload"], help: "Redémarrer (la configuration sauvegardée est rechargée)", run: ({ cli }) => cli.reload() },
+    { modes: PRIV, words: ["erase", "startup-config"], help: "Effacer la configuration sauvegardée", run: ({ cli }) => cli.erase() },
+    { modes: PRIV, words: ["write", "erase"], help: "Effacer la configuration sauvegardée", run: ({ cli }) => cli.erase() },
+    { modes: EXEC, words: ["show", "users"], help: "Sessions ouvertes", run: ({ cli }) => `    Line       User       Host(s)              Idle       Location\n*  0 con 0                idle                 00:00:00${cli.vty ? "\n   2 vty 0                idle                 00:00:00 (à distance)" : ""}` },
+    { modes: EXEC, words: ["show", "history"], help: "Dernières commandes", run: ({ cli }) => cli.history.slice(-10).map((h) => `  ${h}`).join("\n") },
+    { modes: EXEC, words: ["terminal", "<rest>"], help: "length 0, monitor…", run: () => undefined },
+    { modes: EXEC, words: ["show", "flash"], help: "Contenu de la mémoire flash", run: ({ cli }) => cli.showFlash() },
+    { modes: EXEC, words: ["dir"], help: "Contenu de la mémoire flash", run: ({ cli }) => cli.showFlash() },
   ];
 
   /** Commandes acceptées et conservées dans la configuration, sans effet simulé pour l'instant. */
@@ -399,6 +455,21 @@ export class IosCli {
     { modes: CONF, prefix: ["security", "passwords", "min-length"], help: "Longueur minimale des mots de passe" },
     { modes: CONF, prefix: ["login", "block-for"], help: "Protection anti force brute" },
     { modes: CONF, prefix: ["ip", "ssh", "version"], help: "Version de SSH" },
+    { modes: CONF, prefix: ["ip", "name-server"], help: "Serveur DNS" },
+    { modes: CONF, prefix: ["ip", "domain-lookup"], help: "Résolution DNS" },
+    { modes: CONF, prefix: ["logging", "host"], help: "Serveur Syslog" },
+    { modes: CONF, prefix: ["logging", "trap"], help: "Niveau envoyé au serveur Syslog" },
+    { modes: CONF, prefix: ["logging", "buffered"], help: "Journal en mémoire" },
+    { modes: CONF, prefix: ["logging", "console"], help: "Messages sur la console" },
+    { modes: CONF, prefix: ["no", "logging", "console"], help: "Pas de messages sur la console" },
+    { modes: CONF, prefix: ["service", "timestamps"], help: "Horodatage des messages" },
+    { modes: CONF, prefix: ["snmp-server", "community"], help: "Communauté SNMP (RO ou RW)" },
+    { modes: CONF, prefix: ["snmp-server", "location"], help: "Emplacement" },
+    { modes: CONF, prefix: ["snmp-server", "contact"], help: "Contact" },
+    { modes: CONF, prefix: ["snmp-server", "host"], help: "Destination des alertes SNMP" },
+    { modes: CONF, prefix: ["snmp-server", "enable", "traps"], help: "Envoyer des alertes SNMP" },
+    { modes: CONF, prefix: ["banner", "login"], help: "Bannière avant l'authentification" },
+    { modes: CONF, prefix: ["banner", "exec"], help: "Bannière après l'authentification" },
     { modes: ["line"], prefix: ["password"], help: "Mot de passe de la ligne" },
     { modes: ["line"], prefix: ["login"], help: "Demander une authentification" },
     { modes: ["line"], prefix: ["transport", "input"], help: "Protocoles autorisés (ssh, telnet)" },
@@ -424,11 +495,12 @@ export class IosCli {
     if (!raw.trim()) return "";
     if (raw.trimEnd().endsWith("?")) return this.help(raw.slice(0, -1));
     if (raw.trim().startsWith("!")) return "";
-    const res = this.dispatch(raw, this.mode) ?? "";
+    this.history.push(raw.trim());
+    const res = this.logged(this.dispatch(raw, this.mode) ?? "");
     // Depuis un sous-mode, IOS accepte aussi les commandes de configuration globale
     if (SUB.includes(this.mode) && /% (Invalid input|Incomplete command)/.test(res)) {
       const before = this.mode;
-      const alt = this.dispatch(raw, "config") ?? "";
+      const alt = this.logged(this.dispatch(raw, "config") ?? "");
       if (!/% (Invalid input|Incomplete command)/.test(alt)) {
         if (this.mode === before) {
           this.mode = "config";
@@ -901,6 +973,7 @@ export class IosCli {
 
   save(): string {
     this.dev.startup = this.runningConfig().replace("Current configuration", "Using");
+    this.dev.saved = Network.configOf(this.dev);
     return "Destination filename [startup-config]?\nBuilding configuration...\n[OK]";
   }
 
@@ -1600,6 +1673,199 @@ export class IosCli {
     return [`IPv6 Address                              Age Link-layer Addr State Interface`, ...rows].join("\n");
   }
 
+  // ---------- Exploitation : HSRP, horloge, NTP, journal, SNMP ----------
+
+  /** Les messages « %… » sont aussi gardés dans le journal (show logging), horodatés si demandé. */
+  private logged(out: string): string {
+    const msgs = out.split("\n").filter((l) => /^%[A-Z0-9_]+-\d-/.test(l));
+    if (msgs.length) this.net.log(this.dev, msgs);
+    if (msgs.length && this.dev.extra.some((l) => l.startsWith("service timestamps log"))) {
+      const ts = this.clockText(false);
+      return out.replace(/^(%[A-Z0-9_]+-\d-)/gm, `*${ts}: $1`);
+    }
+    return out;
+  }
+
+  hsrp(group: number, fn: (g: NonNullable<Iface["hsrp"]>[number]) => unknown, vip?: string): string | void {
+    if (group < 0 || group > 4095) return INVALID;
+    const i = this.iface;
+    if (!i || this.ifNames.length !== 1 || this.net.isSwitchport(this.dev, i)) return INVALID;
+    if (vip && i.ip && i.mask && networkOf(vip, i.mask) !== networkOf(i.ip, i.mask)) return `% Address ${vip} in group ${group} is not in the subnet of ${i.name}`;
+    const list = (i.hsrp ??= []);
+    let g = list.find((x) => x.group === group);
+    if (!g) list.push((g = { group, version: list[0]?.version }));
+    fn(g);
+    this.net.clearDynamic();
+    const st = (this.net.hsrpState().get(this.dev.id) ?? []).find((x) => x.iface === i.name && x.group === group);
+    if (st && vip) return `%HSRP-5-STATECHANGE: ${i.name} Grp ${group} state Standby -> ${st.state}`;
+  }
+
+  hsrpVersion(v: number): string | void {
+    if (v !== 1 && v !== 2) return INVALID;
+    return this.each((i) => {
+      for (const g of i.hsrp ?? []) g.version = v;
+      if (!i.hsrp?.length) i.hsrp = [];
+      this.net.clearDynamic();
+    });
+  }
+
+  noHsrp(rest: string): string | void {
+    const t = rest.trim().split(/\s+/);
+    return this.each((i) => {
+      if (/^\d+$/.test(t[0]) && t.length === 1) i.hsrp = i.hsrp?.filter((g) => g.group !== Number(t[0]));
+      else if (/^\d+$/.test(t[0])) {
+        const g = i.hsrp?.find((x) => x.group === Number(t[0]));
+        if (g && t[1] === "preempt") g.preempt = undefined;
+        if (g && t[1] === "priority") g.priority = undefined;
+        if (g && t[1] === "ip") g.vip = undefined;
+      } else i.hsrp = undefined;
+      this.net.clearDynamic();
+    });
+  }
+
+  showStandby(brief: boolean): string {
+    const st = this.net.hsrpState().get(this.dev.id) ?? [];
+    if (brief) {
+      return [
+        "                     P indicates configured to preempt.",
+        "                     |",
+        "Interface   Grp  Pri P State   Active          Standby         Virtual IP",
+        ...st.map((x) => `${shortIf(x.iface).padEnd(12)}${String(x.group).padEnd(5)}${String(x.priority).padEnd(4)}${x.preempt ? "P" : " "} ${x.state.padEnd(8)}${(x.state === "Active" ? "local" : x.active ?? "unknown").padEnd(16)}${(x.state === "Standby" ? "local" : x.standby ?? "unknown").padEnd(16)}${x.vip ?? "unknown"}`),
+      ].join("\n");
+    }
+    return st
+      .map((x) =>
+        [
+          `${x.iface} - Group ${x.group}`,
+          `  State is ${x.state}`,
+          `  Virtual IP address is ${x.vip ?? "unknown"}`,
+          `  Active virtual MAC address is ${x.mac} (MAC ${x.state === "Active" ? "In Use" : "Not In Use"})`,
+          `  Hello time 3 sec, hold time 10 sec`,
+          `  Preemption ${x.preempt ? "enabled" : "disabled"}`,
+          `  Active router is ${x.state === "Active" ? "local" : x.active ?? "unknown"}`,
+          `  Standby router is ${x.state === "Standby" ? "local" : x.standby ?? "unknown"}`,
+          `  Priority ${x.priority} (${x.priority === 100 ? "default 100" : "configured " + x.priority})`,
+        ].join("\n")
+      )
+      .join("\n");
+  }
+
+  showLldp(): string {
+    if (!this.dev.lldpOn) return "% LLDP is not enabled";
+    const rows = this.dev.ifaces
+      .filter((i) => this.net.isUp(this.dev, i) && i.lldpTx !== false && i.lldpRx !== false)
+      .map((i) => ({ i, p: this.net.peerOf(this.dev.id, i.name) }))
+      .filter((n): n is { i: Iface; p: { dev: Device; iface: Iface } } => !!n.p && n.p.dev.kind !== "pc" && !!n.p.dev.lldpOn && n.p.iface.lldpTx !== false)
+      .map(({ i, p }) => `${p.dev.hostname.padEnd(21)}${shortIf(i.name).padEnd(16)}120        ${(p.dev.kind === "router" ? "R" : p.dev.kind === "l3switch" ? "B,R" : "B").padEnd(16)}${shortIf(p.iface.name)}`);
+    return ["Capability codes:", "    (R) Router, (B) Bridge, (T) Telephone, (C) DOCSIS Cable Device", "    (W) WLAN Access Point, (P) Repeater, (S) Station, (O) Other", "", "Device ID           Local Intf     Hold-time  Capability      Port ID", ...rows, "", `Total entries displayed: ${rows.length}`].join("\n");
+  }
+
+  private clockText(withZone = true): string {
+    const off = (this.dev.timezone?.hours ?? 0) * 3600000;
+    const d = new Date(Date.now() + (this.dev.clockOffset ?? 0) + off);
+    const p = (n: number, w = 2) => String(n).padStart(w, "0");
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}.${p(d.getUTCMilliseconds(), 3)}${withZone ? ` ${this.dev.timezone?.name ?? "UTC"}` : ""} ${days[d.getUTCDay()]} ${months[d.getUTCMonth()]} ${d.getUTCDate()} ${d.getUTCFullYear()}`;
+  }
+
+  clockSet(rest: string): string | void {
+    const m = rest.trim().match(/^(\d{1,2}):(\d{2}):(\d{2})\s+(\d{1,2})\s+([A-Za-z]{3})[a-z]*\s+(\d{4})$/) ?? rest.trim().match(/^(\d{1,2}):(\d{2}):(\d{2})\s+([A-Za-z]{3})[a-z]*\s+(\d{1,2})\s+(\d{4})$/);
+    if (!m) return INVALID;
+    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const dayFirst = /^\d/.test(m[4]);
+    const day = Number(dayFirst ? m[4] : m[5]);
+    const mon = months.indexOf((dayFirst ? m[5] : m[4]).toLowerCase());
+    if (mon < 0) return INVALID;
+    const t = Date.UTC(Number(m[6]), mon, day, Number(m[1]), Number(m[2]), Number(m[3])) - (this.dev.timezone?.hours ?? 0) * 3600000;
+    this.dev.clockOffset = t - Date.now();
+  }
+
+  /** Synchronise l'horloge sur le premier serveur NTP joignable (lui-même maître ou synchronisé). */
+  private ntpSync(depth = 0): { server: string; stratum: number } | null {
+    if (this.dev.ntpMaster) return null;
+    for (const ip of this.dev.ntpServers ?? []) {
+      const srv = this.net.devices.find((d) => d.kind !== "pc" && this.net.l3Ifaces(d).some((i) => i.ip === ip && this.net.isUp(d, i)));
+      if (!srv || !this.net.ping(this.dev, ip, 2).some((r) => r.ok)) continue;
+      let stratum: number | null = srv.ntpMaster ?? null;
+      if (stratum === null && depth < 3) {
+        const up = new IosCli(this.net, srv).ntpSync(depth + 1);
+        stratum = up ? up.stratum : null;
+      }
+      if (stratum === null) continue;
+      this.dev.clockOffset = srv.clockOffset ?? 0;
+      return { server: ip, stratum: stratum + 1 };
+    }
+    return null;
+  }
+
+  showClock(): string {
+    const sync = this.ntpSync();
+    return `${sync || this.dev.ntpMaster ? "" : "*"}${this.clockText()}`;
+  }
+
+  showNtp(assoc: boolean): string {
+    const sync = this.ntpSync();
+    if (assoc) {
+      const rows = (this.dev.ntpServers ?? []).map((ip) => `${sync?.server === ip ? "*~" : " ~"}${ip.padEnd(17)}${(sync?.server === ip ? "127.127.1.1" : ".INIT.").padEnd(16)}${String(sync?.server === ip ? sync.stratum - 1 : 16).padEnd(6)}12    64  377 0.000   0.000   0.001`);
+      return ["  address         ref clock       st   when   poll reach  delay  offset   disp", ...rows, " * sys.peer, # selected, + candidate, - outlyer, x falseticker, ~ configured"].join("\n");
+    }
+    if (this.dev.ntpMaster) return `Clock is synchronized, stratum ${this.dev.ntpMaster}, reference is 127.127.1.1`;
+    if (!sync) return "Clock is unsynchronized, stratum 16, no reference clock";
+    return `Clock is synchronized, stratum ${sync.stratum}, reference is ${sync.server}\nnominal freq is 250.0000 Hz, actual freq is 250.0000 Hz, precision is 2**18\nreference time is ${this.clockText()}`;
+  }
+
+  showHosts(): string {
+    const rows = (this.dev.hosts ?? []).map((h) => `${h.name.padEnd(24)}None  (perm, OK)  0   IP      ${h.ip}`);
+    const dns = this.dev.extra.find((l) => l.startsWith("ip name-server "))?.split(/\s+/).slice(2).join(" ");
+    return [`Default domain is ${this.dev.extra.find((l) => l.startsWith("ip domain-name "))?.split(" ")[2] ?? "not set"}`, `Name/address lookup uses ${this.dev.extra.includes("no ip domain-lookup") ? "static mappings" : "domain service"}`, `Name servers are ${dns ?? "255.255.255.255"}`, "", "Codes: UN - unknown, EX - expired, OK - OK, ?? - revalidate", "       temp - temporary, perm - permanent", "", "Host                      Port  Flags      Age Type   Address(es)", ...rows].join("\n");
+  }
+
+  showLogging(): string {
+    const hosts = this.dev.extra.filter((l) => l.startsWith("logging host ")).map((l) => l.split(/\s+/).at(-1)!);
+    const trap = this.dev.extra.find((l) => l.startsWith("logging trap "))?.split(/\s+/)[2] ?? "informational";
+    const buf = this.net.logOf(this.dev);
+    return [
+      `Syslog logging: enabled (0 messages dropped, 0 flushes, 0 overruns)`,
+      `    Console logging: ${this.dev.extra.includes("no logging console") ? "disabled" : "level debugging"}, ${buf.length} messages logged`,
+      `    Monitor logging: level debugging, 0 messages logged`,
+      `    Buffer logging:  level debugging, ${buf.length} messages logged`,
+      `    Trap logging: level ${trap}, ${buf.length} message lines logged`,
+      ...hosts.map((h) => `        Logging to ${h}  (udp port 514, audit disabled, link up), ${buf.length} message lines logged`),
+      "",
+      `Log Buffer (4096 bytes):`,
+      ...buf,
+    ].join("\n");
+  }
+
+  showSnmp(community: boolean): string {
+    const comms = this.dev.extra.filter((l) => l.startsWith("snmp-server community ")).map((l) => l.split(/\s+/));
+    if (community) return comms.map((c) => `Community name: ${c[2]}\nCommunity Index: ${c[2]}\nCommunity SecurityName: ${c[2]}\nstorage-type: nonvolatile        active${c[3] ? `\naccess: ${c[3].toUpperCase() === "RW" ? "read-write" : "read-only"}` : ""}`).join("\n\n");
+    if (!comms.length) return "%SNMP agent not enabled";
+    const loc = this.dev.extra.find((l) => l.startsWith("snmp-server location "))?.slice(21);
+    const contact = this.dev.extra.find((l) => l.startsWith("snmp-server contact "))?.slice(20);
+    return [`Chassis: ${this.dev.hostname}`, ...(contact ? [`Contact: ${contact}`] : []), ...(loc ? [`Location: ${loc}`] : []), "0 SNMP packets input", "0 SNMP packets output", `SNMP logging: ${this.dev.extra.some((l) => l.startsWith("snmp-server host")) ? "enabled" : "disabled"}`].join("\n");
+  }
+
+  reload(): string {
+    const msg = `Proceed with reload? [confirm]\n\n%SYS-5-RELOAD: Reload requested by console. Reload Reason: Reload Command.`;
+    this.net.reloadDevice(this.dev);
+    this.mode = "user";
+    this.resetSub();
+    this.authed = false;
+    return `${msg}\n\n\n${this.dev.saved ? "" : "         --- System Configuration Dialog ---\n\nWould you like to enter the initial configuration dialog? [yes/no]: no\n\n"}Press RETURN to get started!`;
+  }
+
+  erase(): string {
+    this.dev.saved = undefined;
+    this.dev.startup = undefined;
+    return "Erasing the nvram filesystem will remove all configuration files! Continue? [confirm]\n[OK]\nErase of nvram: complete\n%SYS-7-NV_BLOCK_INIT: Initialized the geometry of nvram";
+  }
+
+  showFlash(): string {
+    return `Directory of flash:/\n\n    1  -rw-   486899872          <no date>  koralab-universalk9.SPA.bin\n    2  -rw-        ${String((this.dev.startup ?? "").length).padStart(4)}          <no date>  startup-config\n\n3249049600 bytes total (2761149728 bytes free)`;
+  }
+
   // ---------- Sorties « show » ----------
 
   private status(i: Iface) {
@@ -1760,10 +2026,11 @@ export class IosCli {
   }
 
   showCdp(detail: boolean): string {
+    if (this.dev.cdpOff) return "% CDP is not enabled";
     const neighbors = this.dev.ifaces
-      .filter((i) => this.net.isUp(this.dev, i))
+      .filter((i) => this.net.isUp(this.dev, i) && !i.cdpOff)
       .map((i) => ({ local: i, peer: this.net.peerOf(this.dev.id, i.name) }))
-      .filter((n): n is { local: Iface; peer: { dev: Device; iface: Iface } } => !!n.peer && n.peer.dev.kind !== "pc");
+      .filter((n): n is { local: Iface; peer: { dev: Device; iface: Iface } } => !!n.peer && n.peer.dev.kind !== "pc" && !n.peer.dev.cdpOff && !n.peer.iface.cdpOff);
     const cap = (d: Device) => (d.kind === "router" ? "R B S I" : d.kind === "l3switch" ? "R S I" : "S I");
     if (detail) {
       return neighbors
@@ -1905,6 +2172,11 @@ export class IosCli {
     if (d.extra.length) out.push("!");
     if (d.kind === "l3switch" && d.ipRouting) out.push("ip routing", "!");
     if (d.ipv6Routing) out.push("ipv6 unicast-routing", "!");
+    if (d.timezone) out.push(`clock timezone ${d.timezone.name} ${d.timezone.hours}`);
+    for (const h of d.hosts ?? []) out.push(`ip host ${h.name} ${h.ip}`);
+    if (d.cdpOff) out.push("no cdp run");
+    if (d.lldpOn) out.push("lldp run");
+    if (d.timezone || d.hosts?.length || d.cdpOff || d.lldpOn) out.push("!");
     if (isSwitchLike(d)) {
       out.push(`spanning-tree mode ${d.stp?.mode ?? "pvst"}`);
       if (d.stp?.portfastDefault) out.push("spanning-tree portfast default");
@@ -1964,6 +2236,15 @@ export class IosCli {
         if (i.aclIn) out.push(` ip access-group ${i.aclIn} in`);
         if (i.aclOut) out.push(` ip access-group ${i.aclOut} out`);
         if (i.nat) out.push(` ip nat ${i.nat}`);
+        for (const g of i.hsrp ?? []) {
+          if (g.version === 2) out.push(" standby version 2");
+          out.push(` standby ${g.group} ip${g.vip ? ` ${g.vip}` : ""}`);
+          if (g.priority !== undefined) out.push(` standby ${g.group} priority ${g.priority}`);
+          if (g.preempt) out.push(` standby ${g.group} preempt`);
+        }
+        if (i.cdpOff) out.push(" no cdp enable");
+        if (i.lldpTx === false) out.push(" no lldp transmit");
+        if (i.lldpRx === false) out.push(" no lldp receive");
         if (i.ll) out.push(` ipv6 address ${show6(i.ll)} link-local`);
         for (const a of (i.ipv6 ?? []).filter((x) => !x.auto)) out.push(a.eui ? ` ipv6 address ${show6(network6(a.addr, 64))}/64 eui-64` : ` ipv6 address ${show6(a.addr)}/${a.len}`);
         if (i.ipv6Autoconfig) out.push(" ipv6 address autoconfig");
@@ -2019,12 +2300,15 @@ export class IosCli {
     for (const [name, block] of Object.entries(d.lines ?? {})) {
       out.push(name, ...block.map((l) => (pw ? l.replace(/^ password (?!7 )(\S+)$/, " password 7 0822455D0A16") : l)), "!");
     }
+    if (d.ntpMaster) out.push(`ntp master ${d.ntpMaster}`);
+    for (const n of d.ntpServers ?? []) out.push(`ntp server ${n}`);
     out.push("end");
     const body = out.join("\n");
     return `Building configuration...\n\nCurrent configuration : ${body.length} bytes\n${body}`;
   }
 
   ping(dst: string): string {
+    dst = this.dev.hosts?.find((h) => h.name.toLowerCase() === dst.toLowerCase())?.ip ?? dst;
     const v6 = dst.includes(":");
     if (v6 ? !isIp6(dst) : !isIp(dst)) return "% Unrecognized host or address, or protocol not running.";
     const res = v6 ? this.net.ping6(this.dev, dst, 5) : this.net.ping(this.dev, dst, 5);
@@ -2035,6 +2319,7 @@ export class IosCli {
   }
 
   trace(dst: string): string {
+    dst = this.dev.hosts?.find((h) => h.name.toLowerCase() === dst.toLowerCase())?.ip ?? dst;
     const v6 = dst.includes(":");
     if (v6 ? !isIp6(dst) : !isIp(dst)) return "% Unrecognized host or address, or protocol not running.";
     const hops = v6 ? this.net.traceroute6(this.dev, dst) : this.net.traceroute(this.dev, dst);

@@ -58,6 +58,11 @@ export type Iface = {
   ipv6Enabled?: boolean; // ipv6 enable (link-local seule)
   ipv6Autoconfig?: boolean; // ipv6 address autoconfig (SLAAC)
   ll?: string; // adresse link-local configurée à la main
+  // --- HSRP, CDP, LLDP ---
+  hsrp?: { group: number; vip?: string; priority?: number; preempt?: boolean; version?: number }[];
+  cdpOff?: boolean; // no cdp enable
+  lldpTx?: boolean; // lldp transmit (par défaut actif quand « lldp run »)
+  lldpRx?: boolean;
 };
 
 export type Route6 = { prefix: string; len: number; nextHop?: string; iface?: string; ad?: number };
@@ -106,6 +111,16 @@ export type Device = {
   stp?: StpConfig;
   /** Interfaces Port-channel (EtherChannel) */
   portChannels?: Iface[];
+  /** Configuration sauvegardée (copy run start) restaurée par « reload » */
+  saved?: string;
+  /** Services d'exploitation */
+  cdpOff?: boolean; // no cdp run
+  lldpOn?: boolean; // lldp run
+  ntpServers?: string[];
+  ntpMaster?: number;
+  clockOffset?: number; // décalage de l'horloge (ms) par rapport à l'heure réelle
+  timezone?: { name: string; hours: number };
+  hosts?: { name: string; ip: string }[]; // ip host
   /** IPv6 : routage, routes statiques, passerelle (PC) */
   ipv6Routing?: boolean;
   routes6?: Route6[];
@@ -169,6 +184,7 @@ export type NatEntry = { proto: string; insideLocal: string; insideGlobal: strin
 
 /** Route candidate : connectée, statique ou OSPF. */
 export type RouteCand = { code: string; network: string; mask: string; prefix: number; ad: number; metric: number; out: Iface | null; nextHop: string | null; alt?: { out: Iface; nextHop: string }[]; cost?: number };
+export type HsrpState = { iface: string; group: number; vip?: string; priority: number; preempt: boolean; state: "Active" | "Standby" | "Listen" | "Init"; active?: string; standby?: string; mac: string };
 export type OspfIf = { iface: Iface; area: number; passive: boolean; cost: number; dr?: string; bdr?: string; role?: string; nbrs?: number };
 export type OspfNeighbor = { rid: string; pri: number; state: string; address: string; iface: string; dead: number };
 export type OspfDevState = { rid: string | null; ifs: OspfIf[]; neighbors: OspfNeighbor[]; routes: RouteCand[] };
@@ -540,6 +556,7 @@ export class Network {
   }
 
   clearDynamic() {
+    this.hsrpCache = null;
     this.nd.clear();
     this.arp.clear();
     this.macTables.clear();
@@ -598,7 +615,60 @@ export class Network {
   }
 
   private ownsIp(dev: Device, ip: string) {
-    return this.l3Ifaces(dev).some((i) => i.ip === ip && this.isUp(dev, i));
+    return this.l3Ifaces(dev).some((i) => i.ip === ip && this.isUp(dev, i)) || this.hsrpActiveFor(dev, ip) !== null;
+  }
+
+  // ---------- HSRP ----------
+
+  private hsrpCache: Map<string, HsrpState[]> | null = null;
+
+  static hsrpMac(group: number, version = 1): string {
+    return version === 2 ? `0000.0c9f.f${group.toString(16).padStart(3, "0")}` : `0000.0c07.ac${group.toString(16).padStart(2, "0")}`;
+  }
+
+  /** État HSRP de chaque interface : Active, Standby ou Listen, élu par priorité puis adresse IP. */
+  hsrpState(): Map<string, HsrpState[]> {
+    if (this.hsrpCache) return this.hsrpCache;
+    const out = new Map<string, HsrpState[]>();
+    for (const d of this.devices) {
+      if (d.kind !== "router" && d.kind !== "l3switch") continue;
+      for (const i of this.l3Ifaces(d)) {
+        if (!i.hsrp?.length || !i.ip || !this.isUp(d, i)) continue;
+        const peers = this.reachL3(d, i.name);
+        for (const g of i.hsrp) {
+          const members = [{ dev: d, iface: i, g }, ...peers.flatMap((p) => (p.iface.hsrp ?? []).filter((x) => x.group === g.group && p.iface.ip).map((x) => ({ dev: p.dev, iface: p.iface, g: x })))];
+          const vip = members.map((m) => m.g.vip).find(Boolean);
+          const sorted = [...members].sort((a, b) => (b.g.priority ?? 100) - (a.g.priority ?? 100) || (ipToInt(b.iface.ip!) ?? 0) - (ipToInt(a.iface.ip!) ?? 0));
+          const rank = sorted.findIndex((m) => m.iface === i);
+          const st: HsrpState = {
+            iface: i.name,
+            group: g.group,
+            vip,
+            priority: g.priority ?? 100,
+            preempt: !!g.preempt,
+            state: !vip ? "Init" : rank === 0 ? "Active" : rank === 1 ? "Standby" : "Listen",
+            active: sorted[0]?.iface.ip,
+            standby: sorted[1]?.iface.ip,
+            mac: Network.hsrpMac(g.group, g.version),
+          };
+          out.set(d.id, [...(out.get(d.id) ?? []), st]);
+        }
+      }
+    }
+    this.hsrpCache = out;
+    return out;
+  }
+
+  /** Interface où l'équipement est routeur HSRP actif pour cette adresse virtuelle. */
+  private hsrpActiveFor(dev: Device, vip: string): { iface: string; mac: string } | null {
+    if (dev.kind !== "router" && dev.kind !== "l3switch") return null;
+    const st = (this.hsrpState().get(dev.id) ?? []).find((x) => x.vip === vip && x.state === "Active");
+    return st ? { iface: st.iface, mac: st.mac } : null;
+  }
+
+  private hsrpMacsOn(dev: Device, ifaceName: string): string[] {
+    if (dev.kind !== "router" && dev.kind !== "l3switch") return [];
+    return (this.hsrpState().get(dev.id) ?? []).filter((x) => x.iface === ifaceName && x.state === "Active").map((x) => x.mac);
   }
 
   private resolveStatic(dev: Device, r: StaticRoute): { out: Iface; nextHop: string | null } | null {
@@ -1225,9 +1295,15 @@ export class Network {
   private receiveL3(dev: Device, name: string, frame: Frame) {
     const iface = this.findIface(dev, name);
     if (!iface || !this.isUp(dev, iface)) return;
-    if (frame.dst !== BROADCAST_MAC && frame.dst !== iface.mac) return;
+    if (frame.dst !== BROADCAST_MAC && frame.dst !== iface.mac && !this.hsrpMacsOn(dev, name).includes(frame.dst)) return;
     if (frame.type === "arp") {
       const a = frame.arp;
+      const virt = a.op === "req" ? (this.hsrpState().get(dev.id) ?? []).find((x) => x.iface === name && x.state === "Active" && x.vip === a.targetIp) : undefined;
+      if (virt) {
+        this.learnArp(dev, a.senderIp, a.senderMac, name);
+        this.emitL3(dev, name, { src: virt.mac, dst: a.senderMac, type: "arp", arp: { op: "rep", senderIp: virt.vip!, senderMac: virt.mac, targetIp: a.senderIp } });
+        return;
+      }
       if (a.op === "req" && iface.ip && a.targetIp === iface.ip) {
         this.learnArp(dev, a.senderIp, a.senderMac, name);
         this.emitL3(dev, name, { src: iface.mac, dst: a.senderMac, type: "arp", arp: { op: "rep", senderIp: iface.ip, senderMac: iface.mac, targetIp: a.senderIp } });
@@ -1793,6 +1869,49 @@ export class Network {
       if ((this.inbox.get(dev.id) ?? []).some((m) => m.type === "unreachable" && m.id === -id)) return "filtered";
     }
     return "timeout";
+  }
+
+  // ---------- Journal (show logging) ----------
+
+  private logs = new Map<string, string[]>();
+
+  log(dev: Device, lines: string[]) {
+    this.logs.set(dev.id, [...(this.logs.get(dev.id) ?? []), ...lines].slice(-200));
+  }
+
+  logOf(dev: Device): string[] {
+    return this.logs.get(dev.id) ?? [];
+  }
+
+  clearLog(dev: Device) {
+    this.logs.delete(dev.id);
+  }
+
+  // ---------- Redémarrage ----------
+
+  /** Champs de configuration d'un équipement (ce que « copy run start » sauvegarde). */
+  static configOf(dev: Device): string {
+    const { id: _i, x: _x, y: _y, saved: _s, startup: _st, ...cfg } = dev;
+    return JSON.stringify(cfg);
+  }
+
+  /** « reload » : la configuration sauvegardée remplace la configuration en cours (ou réglages d'usine). */
+  reloadDevice(dev: Device) {
+    const fresh = (() => {
+      if (dev.saved) return JSON.parse(dev.saved) as Partial<Device>;
+      const tmp = new Network();
+      const f = tmp.addDevice(dev.kind, 0, 0, dev.model);
+      // garde les adresses MAC d'origine
+      f.ifaces = f.ifaces.map((i, k) => ({ ...i, mac: dev.ifaces[k]?.mac ?? i.mac }));
+      if (f.svis && dev.svis?.[0]) f.svis[0].mac = dev.svis[0].mac;
+      const { id: _i, x: _x, y: _y, ...cfg } = f;
+      return { ...cfg, hostname: f.hostname.replace(/\d+$/, "") === dev.hostname.replace(/\d+$/, "") ? dev.hostname : f.hostname } as Partial<Device>;
+    })();
+    const keep = { id: dev.id, x: dev.x, y: dev.y, saved: dev.saved, startup: dev.startup };
+    for (const k of Object.keys(dev) as (keyof Device)[]) delete (dev as Record<string, unknown>)[k];
+    Object.assign(dev, fresh, keep);
+    if (!dev.saved) dev.hostname = { router: "Router", switch: "Switch", l3switch: "Switch", pc: dev.hostname }[dev.kind];
+    this.clearDynamic();
   }
 
   // ---------- Sauvegarde ----------
