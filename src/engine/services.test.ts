@@ -74,7 +74,7 @@ describe("ACL", () => {
 
   it("telnet vers un routeur : ouvert, puis filtré par une ACL", () => {
     const { net, r1, p1 } = twoLans();
-    expect(new PcCli(net, p1).exec("telnet 192.168.1.1")).toContain("Open");
+    expect(new PcCli(net, p1).exec("telnet 192.168.1.1")).toContain("Password required, but none set");
     run(net, r1, "enable\nconf t\naccess-list 101 deny tcp any any eq telnet\naccess-list 101 permit ip any any\ninterface g0/0/0\nip access-group 101 in\nend");
     expect(net.tcpConnect(p1, "192.168.1.1", 23)).toBe("filtered");
     expect(net.tcpConnect(p1, "192.168.1.1", 22)).toBe("open");
@@ -188,5 +188,63 @@ describe("NAT", () => {
     net.ping(inside, "8.8.8.8", 3);
     expect(ok(net, inside, "8.8.8.8")).toBe(5);
     expect(run(net, r1, "show ip nat translations")).toMatch(/---\s+198\.51\.100\.10\s+192\.168\.1\.10/);
+  });
+});
+
+describe("Mots de passe et sessions à distance", () => {
+  it("enable secret et mot de passe console", () => {
+    const net = new Network();
+    const r1 = net.addDevice("router");
+    const cli = new IosCli(net, r1);
+    for (const l of ["enable", "conf t", "enable secret Kora2026", "line console 0", "password cisco", "login", "end", "exit"]) cli.exec(l);
+    expect(cli.exec("")).toContain("User Access Verification");
+    expect(cli.prompt()).toBe("Password: ");
+    expect(cli.masked()).toBe(true);
+    cli.exec("faux");
+    expect(cli.prompt()).toBe("Password: ");
+    cli.exec("cisco");
+    expect(cli.prompt()).toBe("R1>");
+    cli.exec("enable");
+    expect(cli.prompt()).toBe("Password: ");
+    cli.exec("Kora2026");
+    expect(cli.prompt()).toBe("R1#");
+  });
+
+  it("telnet avec mot de passe vty, puis SSH avec compte local, depuis un PC", () => {
+    const { net, r1, p1 } = twoLans();
+    run(
+      net,
+      r1,
+      `enable
+      conf t
+      enable secret classe
+      line vty 0 4
+      password telnet123
+      login
+      end`
+    );
+    const pcCli = new PcCli(net, p1);
+    expect(pcCli.exec("telnet 192.168.1.1")).toContain("User Access Verification");
+    expect(pcCli.prompt()).toBe("Password: ");
+    pcCli.exec("telnet123");
+    expect(pcCli.prompt()).toBe("R1>");
+    pcCli.exec("enable");
+    pcCli.exec("classe");
+    expect(pcCli.prompt()).toBe("R1#");
+    expect(pcCli.exec("show running-config")).toContain("hostname R1");
+    expect(pcCli.exec("exit")).toContain("[Connection to 192.168.1.1 closed by foreign host]");
+    expect(pcCli.prompt()).toBe("C:\\>");
+    // SSH : il faut un domaine, des clés RSA, un compte local et login local
+    expect(pcCli.exec("ssh -l admin 192.168.1.1")).toContain("refused");
+    run(net, r1, "enable\nclasse\nconf t\nip domain-name kora.lab\ncrypto key generate rsa modulus 2048\nusername admin secret S3cret\nline vty 0 4\nlogin local\ntransport input ssh\nend");
+    expect(pcCli.exec("telnet 192.168.1.1")).toContain("refused"); // transport input ssh : plus de telnet
+    pcCli.exec("ssh -l admin 192.168.1.1");
+    expect(pcCli.prompt()).toBe("Password: ");
+    pcCli.exec("S3cret");
+    expect(pcCli.prompt()).toBe("R1>");
+    pcCli.exec("exit");
+    // access-class : seul 192.168.2.0/24 peut administrer le routeur
+    run(net, r1, "enable\nclasse\nconf t\naccess-list 5 permit 192.168.2.0 0.0.0.255\nline vty 0 4\naccess-class 5 in\nend");
+    expect(pcCli.exec("ssh -l admin 192.168.1.1")).toContain("refused");
   });
 });

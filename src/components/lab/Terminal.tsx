@@ -7,6 +7,8 @@ export type Shell = {
   exec(line: string): string;
   complete(line: string): string;
   banner(): string;
+  /** Saisie d'un mot de passe : la frappe n'est pas affichée */
+  masked?(): boolean;
 };
 
 /** Terminal façon console : historique ↑↓, complétion Tab, aide « ? » immédiate, Ctrl+Z. */
@@ -44,11 +46,12 @@ export function Terminal({
       setInput("");
       return;
     }
+    const secret = !!shell.masked?.();
     const out = shell.exec(line);
-    const next = [...lines, `${promptBefore}${line}`];
+    const next = [...lines, `${promptBefore}${secret ? "" : line}`];
     if (out) next.push(out);
     onLines(next.slice(-600));
-    if (line.trim()) setHistory((h) => [line, ...h.filter((x) => x !== line)].slice(0, 50));
+    if (line.trim() && !secret) setHistory((h) => [line, ...h.filter((x) => x !== line)].slice(0, 50));
     setHIndex(-1);
     setInput("");
     onChange();
@@ -68,6 +71,7 @@ export function Terminal({
         <input
           ref={field}
           value={input}
+          type={shell.masked?.() ? "password" : "text"}
           spellCheck={false}
           autoCapitalize="off"
           autoComplete="off"
@@ -75,7 +79,7 @@ export function Terminal({
           onChange={(e) => {
             const v = e.target.value;
             // Comme sur un vrai équipement, « ? » affiche l'aide sans valider la ligne
-            if (v.endsWith("?")) {
+            if (v.endsWith("?") && !shell.masked?.()) {
               const before = v.slice(0, -1);
               onLines([...lines, `${shell.prompt()}${v}`, shell.exec(v)]);
               setInput(before);
@@ -106,7 +110,7 @@ export function Terminal({
               setInput("");
             }
           }}
-          className="min-w-0 flex-1 bg-transparent caret-kora-300 outline-none"
+          className={`min-w-0 flex-1 bg-transparent caret-kora-300 outline-none ${shell.masked?.() ? "text-transparent" : ""}`}
         />
       </div>
     </div>

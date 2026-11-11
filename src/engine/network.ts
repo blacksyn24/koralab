@@ -47,6 +47,11 @@ export type Iface = {
   stpCost?: number;
   stpPrio?: number; // spanning-tree port-priority (défaut 128)
   channel?: { group: number; mode: "active" | "passive" | "on" | "desirable" | "auto" };
+  // --- Sécurité des ports ---
+  psec?: { max?: number; violation?: "shutdown" | "restrict" | "protect"; sticky?: boolean; macs?: string[] };
+  errdis?: string; // cause d'err-disabled persistante (psecure-violation…)
+  dhcpTrust?: boolean; // ip dhcp snooping trust
+  arpTrust?: boolean; // ip arp inspection trust
 };
 
 export type StpConfig = { mode?: "pvst" | "rapid-pvst"; priorities?: Record<string, number>; portfastDefault?: boolean; bpduguardDefault?: boolean };
@@ -93,6 +98,9 @@ export type Device = {
   stp?: StpConfig;
   /** Interfaces Port-channel (EtherChannel) */
   portChannels?: Iface[];
+  /** DHCP snooping et inspection ARP dynamique */
+  snooping?: { enabled: boolean; vlans: number[] };
+  dai?: { vlans: number[] };
   /** Base VLAN des switchs (le VLAN 1 existe toujours et n'y figure pas) */
   vlans?: Vlan[];
   /** Switch de couche 3 : « ip routing » activé */
@@ -482,6 +490,7 @@ export class Network {
   /** BPDU Guard : un port PortFast qui reçoit des BPDU (switch en face) passe en err-disabled. */
   errDisabled(dev: Device, iface: Iface): boolean {
     if (!isSwitchLike(dev) || iface.routed || !dev.ifaces.includes(iface) || !iface.adminUp) return false;
+    if (iface.errdis) return true;
     const portfast = iface.portfast ?? (!!dev.stp?.portfastDefault && this.opModeRaw(dev, iface) === "access");
     const guard = iface.bpduguard ?? (!!dev.stp?.bpduguardDefault && portfast);
     if (!guard) return false;
@@ -1058,7 +1067,86 @@ export class Network {
       if (frame.vlan !== undefined && frame.vlan !== v) return; // trame étiquetée sur un port d'accès : rejetée
     }
     if (!this.vlanExists(sw, v) || !this.portActive(sw, iface, v)) return;
+    if (!this.portSecurityOk(sw, iface, frame.src)) return;
+    if (!this.snoopingOk(sw, iface, v, frame)) return;
     this.switchForward(sw, this.logicalOf(sw, iface), v, { ...frame, vlan: undefined });
+  }
+
+  // ---------- Sécurité des ports ----------
+
+  private psecLearned = new Map<string, string[]>();
+  private psecViolations = new Map<string, number>();
+
+  /** Adresses MAC sécurisées d'un port (configurées, « sticky » et apprises). */
+  secureMacs(dev: Device, iface: Iface): { mac: string; type: "SecureConfigured" | "SecureSticky" | "SecureDynamic" }[] {
+    const cfg = (iface.psec?.macs ?? []).map((m) => ({ mac: m.replace(/^sticky:/, ""), type: m.startsWith("sticky:") ? ("SecureSticky" as const) : ("SecureConfigured" as const) }));
+    const dyn = (this.psecLearned.get(`${dev.id}|${iface.name}`) ?? []).map((mac) => ({ mac, type: "SecureDynamic" as const }));
+    return [...cfg, ...dyn];
+  }
+
+  psecViolationCount(dev: Device, iface: Iface): number {
+    return this.psecViolations.get(`${dev.id}|${iface.name}`) ?? 0;
+  }
+
+  clearPsec(dev: Device, iface: Iface) {
+    this.psecLearned.delete(`${dev.id}|${iface.name}`);
+  }
+
+  private portSecurityOk(sw: Device, iface: Iface, mac: string): boolean {
+    const ps = iface.psec;
+    if (!ps) return true;
+    const known = this.secureMacs(sw, iface);
+    if (known.some((k) => k.mac === mac)) return true;
+    if (known.length < (ps.max ?? 1)) {
+      if (ps.sticky) ps.macs = [...(ps.macs ?? []), `sticky:${mac}`];
+      else this.psecLearned.set(`${sw.id}|${iface.name}`, [...(this.psecLearned.get(`${sw.id}|${iface.name}`) ?? []), mac]);
+      return true;
+    }
+    const key = `${sw.id}|${iface.name}`;
+    if ((ps.violation ?? "shutdown") !== "protect") this.psecViolations.set(key, (this.psecViolations.get(key) ?? 0) + 1);
+    if ((ps.violation ?? "shutdown") === "shutdown") {
+      iface.errdis = "psecure-violation";
+      this.clearDynamic();
+    }
+    return false;
+  }
+
+  // ---------- DHCP snooping et DAI ----------
+
+  private snoopBindings = new Map<string, { mac: string; ip: string; vlan: number; port: string }[]>();
+
+  snoopingBindings(dev: Device) {
+    return this.snoopBindings.get(dev.id) ?? [];
+  }
+
+  private snoopingOk(sw: Device, iface: Iface, v: number, frame: Frame): boolean {
+    const snoop = sw.snooping?.enabled && sw.snooping.vlans.includes(v);
+    if (snoop && frame.type === "ipv4" && frame.ip.dhcp) {
+      const m = frame.ip.dhcp;
+      const fromServer = m.op === "ack" || m.op === "nak";
+      if (fromServer && !iface.dhcpTrust) return false; // serveur DHCP pirate sur un port non fiable
+      if (fromServer && m.op === "ack" && m.yiaddr) {
+        const port = this.macTables.get(sw.id)?.get(`${v}|${m.chaddr}`) ?? "?";
+        const list = (this.snoopBindings.get(sw.id) ?? []).filter((b) => b.mac !== m.chaddr);
+        list.push({ mac: m.chaddr, ip: m.yiaddr, vlan: v, port });
+        this.snoopBindings.set(sw.id, list);
+      }
+    }
+    if (frame.type === "arp" && sw.dai?.vlans.includes(v) && !iface.arpTrust) {
+      const a = frame.arp;
+      const ok = (this.snoopBindings.get(sw.id) ?? []).some((b) => b.mac === a.senderMac && b.ip === a.senderIp && b.vlan === v);
+      if (!ok) {
+        this.daiDrops.set(sw.id, (this.daiDrops.get(sw.id) ?? 0) + 1);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private daiDrops = new Map<string, number>();
+
+  daiDropCount(dev: Device) {
+    return this.daiDrops.get(dev.id) ?? 0;
   }
 
   /** Commutation dans un VLAN : apprentissage, livraison à la SVI, transfert ou inondation. */
@@ -1465,6 +1553,11 @@ export class Network {
       if (done) break;
     }
     return hops;
+  }
+
+  /** Adresse source utilisée pour joindre une destination (pour access-class). */
+  sourceIpFor(dev: Device, dst: string): string | null {
+    return this.route(dev, dst)?.out.ip ?? null;
   }
 
   /** Essai de connexion TCP (telnet, ssh, http…) : ouvert, refusé, bloqué par une ACL ou sans réponse. */

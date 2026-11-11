@@ -2,12 +2,24 @@
 
 import { isIp, isMask, parseCidr } from "../ip";
 import type { Device, Network } from "../network";
+import { IosCli } from "./ios";
+import { SessionHost } from "./session";
 
 export class PcCli {
-  constructor(public net: Network, public dev: Device) {}
+  session: SessionHost;
+  constructor(
+    public net: Network,
+    public dev: Device
+  ) {
+    this.session = new SessionHost(net, dev, (target) => new IosCli(net, target, true));
+  }
 
   prompt() {
-    return "C:\\>";
+    return this.session.prompt() ?? "C:\\>";
+  }
+
+  masked() {
+    return this.session.masked();
   }
 
   banner() {
@@ -19,12 +31,14 @@ export class PcCli {
   }
 
   complete(line: string) {
+    if (this.session.busy) return this.session.complete(line);
     const words = ["ipconfig", "ping", "tracert", "ip", "help", "arp", "telnet", "ssh"];
     const m = words.filter((w) => w.startsWith(line.trim().toLowerCase()));
     return m.length === 1 && !line.includes(" ") ? `${m[0]} ` : line;
   }
 
   exec(line: string): string {
+    if (this.session.busy) return this.session.exec(line);
     const [cmd = "", ...args] = line.trim().split(/\s+/);
     switch (cmd.toLowerCase()) {
       case "":
@@ -53,9 +67,17 @@ export class PcCli {
         return this.ipconfig(opt === "/all");
       }
       case "telnet":
-        return this.connect(args[0], Number(args[1] ?? 23));
-      case "ssh":
-        return this.connect(args.at(-1), 22);
+        if (args[1] && args[1] !== "23") return this.connect(args[0], Number(args[1]));
+        if (!args[0] || !isIp(args[0])) return "Usage : telnet <adresse IP> [port]";
+        if (!this.nic.ip) return "Ce PC n'a pas d'adresse IP.";
+        return this.session.open(args[0], "telnet");
+      case "ssh": {
+        const li = args.indexOf("-l");
+        const ip = args.at(-1);
+        if (!ip || !isIp(ip) || li < 0) return "Usage : ssh -l <utilisateur> <adresse IP>";
+        if (!this.nic.ip) return "Ce PC n'a pas d'adresse IP.";
+        return this.session.open(ip, "ssh", args[li + 1]);
+      }
       case "ip":
         return this.setIp(args);
       case "ping":

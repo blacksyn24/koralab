@@ -2,6 +2,7 @@
 // Gère les modes, les abréviations (conf t, sh ip int br), l'aide « ? » et la complétion Tab.
 
 import { aclKindFromNumber, parseRule, type Acl } from "../acl";
+import { SessionHost, lineAuth, lineBlock, localUser } from "./session";
 import { isIp, isMask, maskToPrefix, networkOf, prefixToMask } from "../ip";
 import {
   MODELS,
@@ -79,8 +80,35 @@ export class IosCli {
   vlanIds: number[] = [];
   aclName: string | null = null;
   poolName: string | null = null;
+  /** Session console ouverte (après le mot de passe de « line con 0 » s'il y en a un) */
+  authed = false;
+  /** Saisie d'un mot de passe en cours (console ou enable) */
+  auth: { kind: "console" | "enable"; stage: "user" | "pass"; user?: string; tries: number } | null = null;
+  /** Session vty fermée (exit / logout) */
+  closed = false;
+  session: SessionHost;
 
-  constructor(public net: Network, public dev: Device) {}
+  constructor(
+    public net: Network,
+    public dev: Device,
+    /** Session ouverte à distance par telnet / ssh */
+    public vty = false
+  ) {
+    this.session = new SessionHost(net, dev, (target) => new IosCli(net, target, true));
+    if (vty) this.authed = true;
+  }
+
+  masked(): boolean {
+    return this.session.busy ? this.session.masked() : this.auth?.stage === "pass";
+  }
+
+  /** Mot de passe du mode privilégié : enable secret prioritaire sur enable password. */
+  private enablePassword(): string | null {
+    const sec = this.dev.extra.find((l) => l.startsWith("enable secret "));
+    if (sec) return sec.split(/\s+/).at(-1)!;
+    const pw = this.dev.extra.find((l) => l.startsWith("enable password "));
+    return pw ? pw.split(/\s+/).at(-1)! : null;
+  }
 
   get ifName(): string | null {
     return this.ifNames[0] ?? null;
@@ -95,6 +123,9 @@ export class IosCli {
   }
 
   prompt(): string {
+    const remote = this.session.prompt();
+    if (remote !== null) return remote;
+    if (this.auth) return this.auth.stage === "user" ? "Username: " : "Password: ";
     const h = this.dev.hostname;
     if (this.mode === "if") {
       const kind = this.ifNames.length > 1 && !isPortChannel(this.ifNames[0]) ? "if-range" : this.ifName && isSubif(this.ifName) ? "subif" : "if";
@@ -117,7 +148,8 @@ export class IosCli {
 
   private cmds: Cmd[] = [
     // --- Navigation entre les modes ---
-    { modes: ["user"], words: ["enable"], help: "Passer en mode privilégié", run: ({ cli }) => void (cli.mode = "priv") },
+    { modes: ["user"], words: ["enable"], help: "Passer en mode privilégié", run: ({ cli }) => cli.doEnable() },
+    { modes: ["user", "priv"], words: ["logout"], help: "Fermer la session", run: ({ cli }) => cli.logout() },
     { modes: PRIV, words: ["disable"], help: "Revenir en mode utilisateur", run: ({ cli }) => void (cli.mode = "user") },
     { modes: PRIV, words: ["configure", "terminal"], help: "Entrer en mode configuration", run: ({ cli }) => ((cli.mode = "config"), "Enter configuration commands, one per line.  End with CNTL/Z.") },
     { modes: ["user", "priv", "config", ...SUB], words: ["exit"], help: "Quitter le mode actuel", run: ({ cli }) => cli.exit() },
@@ -249,8 +281,8 @@ export class IosCli {
     { modes: PRIV, words: ["clear", "ip", "nat", "translation", "<rest>"], help: "Effacer les traductions dynamiques (*)", run: ({ cli }) => void cli.net.clearNat(cli.dev), only: ["router"] },
 
     // --- Tests de connexion ---
-    { modes: EXEC, words: ["telnet", "<ip>"], help: "Ouvrir une session telnet", run: ({ cli, args }) => cli.connect(args[0], 23) },
-    { modes: EXEC, words: ["ssh", "<rest>"], help: "Ouvrir une session SSH (ssh -l utilisateur ip)", run: ({ cli, args }) => cli.connect(args[0].split(/\s+/).at(-1) ?? "", 22) },
+    { modes: EXEC, words: ["telnet", "<ip>"], help: "Ouvrir une session telnet", run: ({ cli, args }) => (isIp(args[0]) ? cli.session.open(args[0], "telnet") : INVALID) },
+    { modes: EXEC, words: ["ssh", "<rest>"], help: "Ouvrir une session SSH (ssh -l utilisateur ip)", run: ({ cli, args }) => cli.sshCmd(args[0]) },
 
     // --- OSPF ---
     { modes: CONF, words: ["router", "ospf", "<num>"], help: "Processus OSPF", run: ({ cli, args }) => cli.enterOspf(Number(args[0])), only: L3 },
@@ -304,6 +336,36 @@ export class IosCli {
     { modes: IFM, words: ["channel-group", "<num>", "mode", "<word>"], help: "active/passive (LACP), desirable/auto (PAgP) ou on", run: ({ cli, args }) => cli.channelGroup(Number(args[0]), args[1]), only: SW },
     { modes: IFM, words: ["no", "channel-group"], help: "Retirer le port de l'EtherChannel", run: ({ cli }) => cli.eachPort((i) => void (i.channel = undefined)), only: SW },
     { modes: EXEC, words: ["show", "etherchannel", "summary"], help: "Résumé des EtherChannel", run: ({ cli }) => cli.showEtherchannel(), only: SW },
+
+    // --- Sécurité des ports, DHCP snooping, DAI ---
+    { modes: IFM, words: ["switchport", "port-security"], help: "Activer la sécurité du port", run: ({ cli }) => cli.psecEnable(true), only: SW },
+    { modes: IFM, words: ["no", "switchport", "port-security"], help: "Désactiver la sécurité du port", run: ({ cli }) => cli.psecEnable(false), only: SW },
+    { modes: IFM, words: ["switchport", "port-security", "maximum", "<num>"], help: "Nombre maximal d'adresses MAC", run: ({ cli, args }) => cli.psecSet((p) => (p.max = Number(args[0]))), only: SW },
+    { modes: IFM, words: ["switchport", "port-security", "violation", "<word>"], help: "shutdown, restrict ou protect", run: ({ cli, args }) => cli.psecViolation(args[0]), only: SW },
+    { modes: IFM, words: ["switchport", "port-security", "mac-address", "sticky"], help: "Mémoriser les adresses apprises", run: ({ cli }) => cli.psecSet((p) => (p.sticky = true)), only: SW },
+    { modes: IFM, words: ["no", "switchport", "port-security", "mac-address", "sticky"], help: "Ne plus mémoriser", run: ({ cli }) => cli.psecSet((p) => ((p.sticky = undefined), (p.macs = p.macs?.filter((m) => !m.startsWith("sticky:"))))), only: SW },
+    { modes: IFM, words: ["switchport", "port-security", "mac-address", "<word>"], help: "Adresse MAC autorisée (aaaa.bbbb.cccc)", run: ({ cli, args }) => cli.psecMac(args[0]), only: SW },
+    { modes: IFM, words: ["ip", "dhcp", "snooping", "trust"], help: "Port fiable (vers le vrai serveur DHCP)", run: ({ cli }) => cli.eachPort((i) => void (i.dhcpTrust = true)), only: SW },
+    { modes: IFM, words: ["no", "ip", "dhcp", "snooping", "trust"], help: "Port non fiable", run: ({ cli }) => cli.eachPort((i) => void (i.dhcpTrust = undefined)), only: SW },
+    { modes: IFM, words: ["ip", "dhcp", "snooping", "limit", "rate", "<num>"], help: "Limite de messages DHCP par seconde", run: () => undefined, only: SW },
+    { modes: IFM, words: ["ip", "arp", "inspection", "trust"], help: "Port fiable pour l'inspection ARP", run: ({ cli }) => cli.eachPort((i) => void (i.arpTrust = true)), only: SW },
+    { modes: IFM, words: ["no", "ip", "arp", "inspection", "trust"], help: "Port non fiable", run: ({ cli }) => cli.eachPort((i) => void (i.arpTrust = undefined)), only: SW },
+    { modes: CONF, words: ["ip", "dhcp", "snooping"], help: "Activer le DHCP snooping", run: ({ cli }) => void ((cli.dev.snooping ??= { enabled: true, vlans: [] }).enabled = true), only: SW },
+    { modes: CONF, words: ["no", "ip", "dhcp", "snooping"], help: "Désactiver le DHCP snooping", run: ({ cli }) => void (cli.dev.snooping && (cli.dev.snooping.enabled = false)), only: SW },
+    { modes: CONF, words: ["ip", "dhcp", "snooping", "vlan", "<rest>"], help: "VLAN surveillés", run: ({ cli, args }) => cli.snoopVlans(args[0], true), only: SW },
+    { modes: CONF, words: ["no", "ip", "dhcp", "snooping", "vlan", "<rest>"], help: "Ne plus surveiller ces VLAN", run: ({ cli, args }) => cli.snoopVlans(args[0], false), only: SW },
+    { modes: CONF, words: ["ip", "dhcp", "snooping", "information", "option"], help: "Option 82", run: () => undefined, only: SW },
+    { modes: CONF, words: ["no", "ip", "dhcp", "snooping", "information", "option"], help: "Désactiver l'option 82", run: () => undefined, only: SW },
+    { modes: CONF, words: ["ip", "arp", "inspection", "vlan", "<rest>"], help: "Inspection ARP dynamique (DAI) sur ces VLAN", run: ({ cli, args }) => cli.daiVlans(args[0], true), only: SW },
+    { modes: CONF, words: ["no", "ip", "arp", "inspection", "vlan", "<rest>"], help: "Désactiver la DAI", run: ({ cli, args }) => cli.daiVlans(args[0], false), only: SW },
+    { modes: CONF, words: ["errdisable", "recovery", "<rest>"], help: "Réactivation automatique des ports err-disabled", run: () => undefined, only: SW },
+    { modes: EXEC, words: ["show", "port-security"], help: "Ports sécurisés", run: ({ cli }) => cli.showPsec(), only: SW },
+    { modes: EXEC, words: ["show", "port-security", "interface", "<rest>"], help: "Sécurité d'un port", run: ({ cli, args }) => cli.showPsecIf(args[0]), only: SW },
+    { modes: EXEC, words: ["show", "port-security", "address"], help: "Adresses MAC sécurisées", run: ({ cli }) => cli.showPsecAddr(), only: SW },
+    { modes: EXEC, words: ["show", "ip", "dhcp", "snooping"], help: "État du DHCP snooping", run: ({ cli }) => cli.showSnooping(), only: SW },
+    { modes: EXEC, words: ["show", "ip", "dhcp", "snooping", "binding"], help: "Table des baux observés", run: ({ cli }) => cli.showSnoopBinding(), only: SW },
+    { modes: EXEC, words: ["show", "ip", "arp", "inspection"], help: "État de l'inspection ARP", run: ({ cli }) => cli.showDai(), only: SW },
+    { modes: EXEC, words: ["show", "interfaces", "status", "err-disabled"], help: "Ports err-disabled", run: ({ cli }) => cli.showErrdis(), only: SW },
   ];
 
   /** Commandes acceptées et conservées dans la configuration, sans effet simulé pour l'instant. */
@@ -330,6 +392,16 @@ export class IosCli {
   // ---------- Exécution d'une ligne ----------
 
   exec(line: string): string {
+    if (this.session.busy) return this.session.exec(line);
+    if (this.auth) return this.checkAuth(line);
+    if (!this.authed) {
+      const con = lineAuth(lineBlock(this.dev, "con"));
+      if (con.mode === "none") this.authed = true;
+      else {
+        this.auth = { kind: "console", stage: con.mode === "local" ? "user" : "pass", tries: 0 };
+        return "\nUser Access Verification\n";
+      }
+    }
     const raw = line.replace(/\s+$/, "");
     if (!raw.trim()) return "";
     if (raw.trimEnd().endsWith("?")) return this.help(raw.slice(0, -1));
@@ -348,6 +420,73 @@ export class IosCli {
       }
     }
     return res;
+  }
+
+  doEnable(): string | void {
+    const pw = this.enablePassword();
+    if (!pw) {
+      if (this.vty) return "% No password set";
+      this.mode = "priv";
+      return;
+    }
+    this.auth = { kind: "enable", stage: "pass", tries: 0 };
+  }
+
+  private checkAuth(line: string): string {
+    const a = this.auth!;
+    if (a.stage === "user") {
+      a.user = line.trim();
+      a.stage = "pass";
+      return "";
+    }
+    if (a.kind === "enable") {
+      if (line === this.enablePassword()) {
+        this.auth = null;
+        this.mode = "priv";
+        return "";
+      }
+      if (++a.tries >= 3) {
+        this.auth = null;
+        return "% Bad secrets\n";
+      }
+      return "";
+    }
+    const con = lineAuth(lineBlock(this.dev, "con"));
+    const ok = con.mode === "local" ? !!a.user && localUser(this.dev, a.user) === line : line === con.password;
+    if (ok) {
+      this.auth = null;
+      this.authed = true;
+      this.mode = "user";
+      return this.banner() ? `${this.banner()}\n` : "";
+    }
+    if (con.mode === "local") {
+      a.stage = "user";
+      return "% Login invalid\n";
+    }
+    if (++a.tries >= 3) {
+      a.tries = 0;
+      return "% Bad passwords\n";
+    }
+    return "";
+  }
+
+  logout(): string {
+    if (this.vty) {
+      this.closed = true;
+      return "";
+    }
+    this.mode = "user";
+    this.authed = false;
+    return `\n\n${this.dev.hostname} con0 is now available\n\nPress RETURN to get started.`;
+  }
+
+  sshCmd(rest: string): string {
+    const t = rest.trim().split(/\s+/);
+    const li = t.indexOf("-l");
+    const user = li >= 0 ? t[li + 1] : undefined;
+    const ip = t.at(-1) ?? "";
+    if (!isIp(ip)) return INVALID;
+    return this.session.open(ip, "ssh", user);
   }
 
   runAs(mode: Mode, line: string): string {
@@ -472,6 +611,8 @@ export class IosCli {
 
   /** Complète le dernier mot s'il n'y a qu'une possibilité (touche Tab). */
   complete(line: string): string {
+    if (this.session.busy) return this.session.complete(line);
+    if (this.auth) return line;
     const tokens = this.tokenize(line);
     if (!tokens.length || /\s$/.test(line)) return line;
     const done = tokens.slice(0, -1).map((t) => t.t);
@@ -488,10 +629,7 @@ export class IosCli {
       this.mode = "config";
       this.resetSub();
     } else if (this.mode === "config") this.mode = "priv";
-    else {
-      this.mode = "user";
-      return `\n\n${this.dev.hostname} con0 is now available\n\nPress RETURN to get started.`;
-    }
+    else return this.logout();
   }
 
   private resetSub() {
@@ -608,6 +746,7 @@ export class IosCli {
   }
 
   setAdmin(i: Iface, up: boolean): string {
+    if (!up) i.errdis = undefined; // « shutdown » puis « no shutdown » réactive un port err-disabled
     if (i.adminUp === up) return "";
     i.adminUp = up;
     this.net.clearDynamic();
@@ -1224,16 +1363,109 @@ export class IosCli {
     ].join("\n");
   }
 
-  // ---------- Connexions ----------
+  // ---------- Sécurité des ports ----------
 
-  connect(ip: string, port: number): string {
-    if (!isIp(ip)) return "% Unknown command or computer name, or unable to find computer address";
-    const r = this.net.tcpConnect(this.dev, ip, port);
-    const head = `Trying ${ip} ...`;
-    if (r === "open") return `${head} Open\n\n[KoraLab] Connexion ${port === 22 ? "SSH" : "telnet"} établie : le chemin et les ACL laissent passer la session.\n[Connection to ${ip} closed by foreign host]`;
-    if (r === "refused") return `${head}\n% Connection refused by remote host`;
-    if (r === "filtered") return `${head}\n% Destination unreachable; gateway or host down`;
-    return `${head}\n% Connection timed out; remote host not responding`;
+  psecEnable(on: boolean): string | void {
+    if (on && this.ifaces.some((i) => (i.mode ?? "dynamic-auto").startsWith("dynamic"))) return `Command rejected: ${this.ifName} is a dynamic port.`;
+    return this.eachPort((i) => {
+      i.psec = on ? (i.psec ?? {}) : undefined;
+      this.net.clearPsec(this.dev, i);
+    });
+  }
+
+  psecSet(fn: (p: NonNullable<Iface["psec"]>) => unknown): string | void {
+    return this.eachPort((i) => void fn((i.psec ??= {})));
+  }
+
+  psecViolation(raw: string): string | void {
+    const v = (["shutdown", "restrict", "protect"] as const).find((x) => x.startsWith(raw.toLowerCase()));
+    if (!v) return INVALID;
+    return this.psecSet((p) => (p.violation = v === "shutdown" ? undefined : v));
+  }
+
+  psecMac(raw: string): string | void {
+    const mac = raw.toLowerCase();
+    if (!/^[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}$/.test(mac)) return INVALID;
+    return this.psecSet((p) => (p.macs = [...new Set([...(p.macs ?? []), mac])]));
+  }
+
+  snoopVlans(rest: string, on: boolean): string | void {
+    const ids = parseVlanList(rest.replace(/\s+/g, ""));
+    if (!ids?.size) return INVALID;
+    const sn = (this.dev.snooping ??= { enabled: false, vlans: [] });
+    sn.vlans = on ? [...new Set([...sn.vlans, ...ids])].sort((a, b) => a - b) : sn.vlans.filter((v) => !ids.has(v));
+  }
+
+  daiVlans(rest: string, on: boolean): string | void {
+    const ids = parseVlanList(rest.replace(/\s+/g, ""));
+    if (!ids?.size) return INVALID;
+    const d = (this.dev.dai ??= { vlans: [] });
+    d.vlans = on ? [...new Set([...d.vlans, ...ids])].sort((a, b) => a - b) : d.vlans.filter((v) => !ids.has(v));
+  }
+
+  showPsec(): string {
+    const rows = this.dev.ifaces
+      .filter((i) => i.psec)
+      .map((i) => `${shortIf(i.name).padStart(15)}${String(i.psec!.max ?? 1).padStart(15)}${String(this.net.secureMacs(this.dev, i).length).padStart(15)}${String(this.net.psecViolationCount(this.dev, i)).padStart(15)}         ${(i.psec!.violation ?? "shutdown").replace(/^./, (c) => c.toUpperCase())}`);
+    return ["Secure Port  MaxSecureAddr  CurrentAddr  SecurityViolation  Security Action", "                (Count)       (Count)          (Count)", "---------------------------------------------------------------------------", ...rows, "---------------------------------------------------------------------------"].join("\n");
+  }
+
+  showPsecIf(raw: string): string {
+    const name = resolveIfaceName(this.dev, raw.trim());
+    const i = name ? this.dev.ifaces.find((x) => x.name === name) : undefined;
+    if (!i) return INVALID;
+    const macs = this.net.secureMacs(this.dev, i);
+    const status = !i.psec ? "Disabled" : i.errdis ? "Secure-shutdown" : this.net.isUp(this.dev, i) ? "Secure-up" : "Secure-down";
+    return [
+      `Port Security              : ${i.psec ? "Enabled" : "Disabled"}`,
+      `Port Status                : ${status}`,
+      `Violation Mode             : ${(i.psec?.violation ?? "shutdown").replace(/^./, (c) => c.toUpperCase())}`,
+      `Aging Time                 : 0 mins`,
+      `Aging Type                 : Absolute`,
+      `SecureStatic Address Aging : Disabled`,
+      `Maximum MAC Addresses      : ${i.psec?.max ?? 1}`,
+      `Total MAC Addresses        : ${macs.length}`,
+      `Configured MAC Addresses   : ${macs.filter((m) => m.type === "SecureConfigured").length}`,
+      `Sticky MAC Addresses       : ${macs.filter((m) => m.type === "SecureSticky").length}`,
+      `Last Source Address:Vlan   : ${macs.at(-1) ? `${macs.at(-1)!.mac}:${i.accessVlan ?? 1}` : "0000.0000.0000:0"}`,
+      `Security Violation Count   : ${this.net.psecViolationCount(this.dev, i)}`,
+    ].join("\n");
+  }
+
+  showPsecAddr(): string {
+    const rows = this.dev.ifaces.flatMap((i) => (i.psec ? this.net.secureMacs(this.dev, i).map((m) => `${String(i.accessVlan ?? 1).padStart(4)}    ${m.mac.padEnd(18)}${m.type.padEnd(21)}${shortIf(i.name).padEnd(8)}-`) : []));
+    return ["               Secure Mac Address Table", "-----------------------------------------------------------------------------", "Vlan    Mac Address       Type                     Ports   Remaining Age", "                                                              (mins)", "----    -----------       ----                     -----   -------------", ...rows].join("\n");
+  }
+
+  showSnooping(): string {
+    const sn = this.dev.snooping;
+    const trusted = this.dev.ifaces.filter((i) => i.dhcpTrust);
+    return [
+      `Switch DHCP snooping is ${sn?.enabled ? "enabled" : "disabled"}`,
+      `DHCP snooping is configured on following VLANs:`,
+      sn?.vlans.length ? formatVlanList(sn.vlans) : "none",
+      `DHCP snooping is operational on following VLANs:`,
+      sn?.enabled && sn.vlans.length ? formatVlanList(sn.vlans) : "none",
+      `Insertion of option 82 is enabled`,
+      `Interface                  Trusted    Allow option    Rate limit (pps)`,
+      `-----------------------    -------    ------------    ----------------`,
+      ...trusted.map((i) => `${i.name.padEnd(27)}yes        yes             unlimited`),
+    ].join("\n");
+  }
+
+  showSnoopBinding(): string {
+    const rows = this.net.snoopingBindings(this.dev).map((b) => `${b.mac.replace(/(..)(..)\.?/g, "$1:$2:").replace(/:$/, "").toUpperCase().padEnd(20)}${b.ip.padEnd(17)}86400       dhcp-snooping   ${String(b.vlan).padEnd(6)}${b.port}`);
+    return ["MacAddress          IpAddress        Lease(sec)  Type           VLAN  Interface", "------------------  ---------------  ----------  -------------  ----  --------------------", ...rows, `Total number of bindings: ${rows.length}`].join("\n");
+  }
+
+  showDai(): string {
+    const v = this.dev.dai?.vlans ?? [];
+    return [`Source Mac Validation      : Disabled`, `Destination Mac Validation : Disabled`, `IP Address Validation      : Disabled`, "", ` Vlan     Configuration    Operation   ACL Match          Static ACL`, ` ----     -------------    ---------   ---------          ----------`, ...v.map((x) => ` ${String(x).padEnd(9)}Enabled          Active`), "", `Dropped ARP packets : ${this.net.daiDropCount(this.dev)}`].join("\n");
+  }
+
+  showErrdis(): string {
+    const rows = this.dev.ifaces.filter((i) => this.net.errDisabled(this.dev, i)).map((i) => `${shortIf(i.name).padEnd(10)}${i.description.slice(0, 18).padEnd(19)}err-disabled ${i.errdis ?? "bpduguard"}`);
+    return ["Port      Name               Status       Reason", ...rows].join("\n");
   }
 
   // ---------- Sorties « show » ----------
@@ -1545,6 +1777,9 @@ export class IosCli {
       if (d.stp?.portfastDefault) out.push("spanning-tree portfast default");
       if (d.stp?.bpduguardDefault) out.push("spanning-tree portfast bpduguard default");
       for (const [v, pr] of Object.entries(d.stp?.priorities ?? {})) out.push(`spanning-tree vlan ${v} priority ${pr}`);
+      if (d.snooping?.enabled) out.push("ip dhcp snooping");
+      if (d.snooping?.vlans.length) out.push(`ip dhcp snooping vlan ${formatVlanList(d.snooping.vlans)}`);
+      if (d.dai?.vlans.length) out.push(`ip arp inspection vlan ${formatVlanList(d.dai.vlans)}`);
       out.push("!");
     }
     for (const [a, b] of d.dhcpExcluded ?? []) out.push(`ip dhcp excluded-address ${a}${b !== a ? ` ${b}` : ""}`);
@@ -1576,6 +1811,15 @@ export class IosCli {
         if (i.mode === "dynamic-desirable") out.push(" switchport mode dynamic desirable");
         if (i.nonegotiate) out.push(" switchport nonegotiate");
         if (i.channel) out.push(` channel-group ${i.channel.group} mode ${i.channel.mode}`);
+        if (i.psec) {
+          out.push(" switchport port-security");
+          if (i.psec.max) out.push(` switchport port-security maximum ${i.psec.max}`);
+          if (i.psec.violation) out.push(` switchport port-security violation ${i.psec.violation}`);
+          if (i.psec.sticky) out.push(" switchport port-security mac-address sticky");
+          for (const m of i.psec.macs ?? []) out.push(` switchport port-security mac-address ${m.startsWith("sticky:") ? `sticky ${m.slice(7)}` : m}`);
+        }
+        if (i.dhcpTrust) out.push(" ip dhcp snooping trust");
+        if (i.arpTrust) out.push(" ip arp inspection trust");
         if (i.portfast) out.push(" spanning-tree portfast");
         if (i.bpduguard !== undefined) out.push(` spanning-tree bpduguard ${i.bpduguard ? "enable" : "disable"}`);
         if (i.stpCost) out.push(` spanning-tree cost ${i.stpCost}`);
