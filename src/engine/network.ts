@@ -41,7 +41,17 @@ export type Iface = {
   ospfHello?: number;
   ospfDead?: number;
   ospfP2p?: boolean; // ip ospf network point-to-point
+  // --- Spanning Tree et EtherChannel ---
+  portfast?: boolean;
+  bpduguard?: boolean;
+  stpCost?: number;
+  stpPrio?: number; // spanning-tree port-priority (défaut 128)
+  channel?: { group: number; mode: "active" | "passive" | "on" | "desirable" | "auto" };
 };
+
+export type StpConfig = { mode?: "pvst" | "rapid-pvst"; priorities?: Record<string, number>; portfastDefault?: boolean; bpduguardDefault?: boolean };
+export type StpPort = { role: "Root" | "Desg" | "Altn"; state: "FWD" | "BLK"; cost: number; prio: number; nbr: number; edge: boolean };
+export type StpVlan = { rootBid: { prio: number; mac: string }; bid: { prio: number; mac: string }; rootCost: number; rootPort?: string; ports: Map<string, StpPort> };
 
 export type OspfConfig = {
   pid: number;
@@ -79,6 +89,10 @@ export type Device = {
   loopbacks?: Iface[];
   /** Processus OSPF */
   ospf?: OspfConfig;
+  /** Spanning Tree */
+  stp?: StpConfig;
+  /** Interfaces Port-channel (EtherChannel) */
+  portChannels?: Iface[];
   /** Base VLAN des switchs (le VLAN 1 existe toujours et n'y figure pas) */
   vlans?: Vlan[];
   /** Switch de couche 3 : « ip routing » activé */
@@ -131,6 +145,12 @@ export type OspfIf = { iface: Iface; area: number; passive: boolean; cost: numbe
 export type OspfNeighbor = { rid: string; pri: number; state: string; address: string; iface: string; dead: number };
 export type OspfDevState = { rid: string | null; ifs: OspfIf[]; neighbors: OspfNeighbor[]; routes: RouteCand[] };
 
+/** Comparaison lexicographique de deux listes de nombres (a < b ?). */
+function lexLess(a: number[], b: number[]): boolean {
+  for (let k = 0; k < Math.min(a.length, b.length); k++) if (a[k] !== b[k]) return a[k] < b[k];
+  return a.length < b.length;
+}
+
 export const SVI = "Vlan1";
 
 // ---------- Modèles d'équipements ----------
@@ -177,6 +197,7 @@ export const isSwitchLike = (dev: Device) => dev.kind === "switch" || dev.kind =
 export const isSvi = (name: string) => /^Vlan\d+$/.test(name);
 export const isSubif = (name: string) => name.includes(".");
 export const isLoopback = (name: string) => /^Loopback\d+$/.test(name);
+export const isPortChannel = (name: string) => /^Port-channel\d+$/.test(name);
 export const vlanOf = (sviName: string) => Number(sviName.slice(4));
 export const parentOf = (subif: string) => subif.split(".")[0];
 
@@ -210,12 +231,12 @@ export function formatVlanList(set: Iterable<number>): string {
 
 /** Abréviation d'un nom d'interface : GigabitEthernet0/0/0 -> Gi0/0/0 */
 export function shortIf(name: string): string {
-  return name.replace(/^GigabitEthernet/, "Gi").replace(/^FastEthernet/, "Fa").replace(/^Vlan/, "Vl").replace(/^Loopback/, "Lo");
+  return name.replace(/^GigabitEthernet/, "Gi").replace(/^FastEthernet/, "Fa").replace(/^Vlan/, "Vl").replace(/^Loopback/, "Lo").replace(/^Port-channel/, "Po");
 }
 
 /** Toutes les interfaces d'un équipement (physiques, sous-interfaces, SVI). */
 export function allIfaces(dev: Device): Iface[] {
-  return [...dev.ifaces, ...(dev.subifs ?? []), ...(dev.svis ?? []), ...(dev.loopbacks ?? [])];
+  return [...dev.ifaces, ...(dev.subifs ?? []), ...(dev.svis ?? []), ...(dev.loopbacks ?? []), ...(dev.portChannels ?? [])];
 }
 
 export function findIfaceOn(dev: Device, name: string): Iface | undefined {
@@ -231,6 +252,9 @@ export function resolveIfaceName(dev: Device, raw: string): string | null {
   const m = s.match(/^([a-z-]+)(\d+(?:\/\d+)*)(?:\.(\d+))?$/);
   if (!m) return null;
   const [, typed, num, sub] = m;
+  if ("port-channel".startsWith(typed) && typed.length >= 2 && !sub && !num.includes("/")) {
+    return isSwitchLike(dev) && Number(num) >= 1 && Number(num) <= 48 ? `Port-channel${Number(num)}` : null;
+  }
   if ("loopback".startsWith(typed) && typed.length >= 2 && !sub && !num.includes("/")) {
     return dev.kind === "router" || dev.kind === "l3switch" ? `Loopback${Number(num)}` : null;
   }
@@ -325,6 +349,11 @@ export class Network {
   ensureIface(dev: Device, name: string): Iface | undefined {
     const found = findIfaceOn(dev, name);
     if (found) return found;
+    if (isPortChannel(name) && isSwitchLike(dev)) {
+      const po: Iface = { name, mac: dev.svis?.[0]?.mac ?? makeMac(this.macSeed++), adminUp: true, description: "" };
+      dev.portChannels = [...(dev.portChannels ?? []), po].sort((a, b) => a.name.localeCompare(b.name, "en", { numeric: true }));
+      return po;
+    }
     if (isLoopback(name) && (dev.kind === "router" || dev.kind === "l3switch")) {
       const lo: Iface = { name, mac: "0000.0000.0000", adminUp: true, description: "" };
       dev.loopbacks = [...(dev.loopbacks ?? []), lo].sort((a, b) => a.name.localeCompare(b.name, "en", { numeric: true }));
@@ -348,6 +377,10 @@ export class Network {
     if (isSvi(name)) dev.svis = (dev.svis ?? []).filter((i) => i.name !== name || name === SVI);
     if (isSubif(name)) dev.subifs = (dev.subifs ?? []).filter((i) => i.name !== name);
     if (isLoopback(name)) dev.loopbacks = (dev.loopbacks ?? []).filter((i) => i.name !== name);
+    if (isPortChannel(name)) {
+      dev.portChannels = (dev.portChannels ?? []).filter((i) => i.name !== name);
+      for (const m of dev.ifaces) if (m.channel && `Port-channel${m.channel.group}` === name) m.channel = undefined;
+    }
     this.clearDynamic();
   }
 
@@ -443,16 +476,32 @@ export class Network {
   private physUp(dev: Device, iface: Iface): boolean {
     if (!iface.adminUp) return false;
     const peer = this.peerOf(dev.id, iface.name);
-    return !!peer && peer.iface.adminUp;
+    return !!peer && peer.iface.adminUp && !this.errDisabled(dev, iface) && !this.errDisabled(peer.dev, peer.iface);
+  }
+
+  /** BPDU Guard : un port PortFast qui reçoit des BPDU (switch en face) passe en err-disabled. */
+  errDisabled(dev: Device, iface: Iface): boolean {
+    if (!isSwitchLike(dev) || iface.routed || !dev.ifaces.includes(iface) || !iface.adminUp) return false;
+    const portfast = iface.portfast ?? (!!dev.stp?.portfastDefault && this.opModeRaw(dev, iface) === "access");
+    const guard = iface.bpduguard ?? (!!dev.stp?.bpduguardDefault && portfast);
+    if (!guard) return false;
+    const peer = this.peerOf(dev.id, iface.name);
+    return !!peer && peer.iface.adminUp && isSwitchLike(peer.dev) && !peer.iface.routed;
+  }
+
+  /** Mode configuré sans négociation (pour PortFast par défaut). */
+  private opModeRaw(_dev: Device, iface: Iface): "access" | "trunk" {
+    return iface.mode === "trunk" ? "trunk" : "access";
   }
 
   /** État « up/up » d'une interface (physique, sous-interface ou SVI). */
   isUp(dev: Device, iface: Iface): boolean {
     if (isLoopback(iface.name)) return iface.adminUp;
+    if (isPortChannel(iface.name)) return iface.adminUp && this.bundle(dev, Number(iface.name.slice(12))).members.length > 0;
     if (isSvi(iface.name)) {
       const v = vlanOf(iface.name);
       if (!iface.adminUp || !this.vlanExists(dev, v)) return false;
-      return dev.ifaces.some((p) => this.isSwitchport(dev, p) && this.physUp(dev, p) && this.portCarries(dev, p, v));
+      return dev.ifaces.some((p) => this.isSwitchport(dev, p) && this.physUp(dev, p) && this.portCarries(dev, p, v) && (!p.channel || this.bundle(dev, p.channel.group).members.includes(p)));
     }
     if (isSubif(iface.name)) {
       const parent = dev.ifaces.find((i) => i.name === parentOf(iface.name));
@@ -465,6 +514,7 @@ export class Network {
     this.arp.clear();
     this.macTables.clear();
     this.ospfCache = null;
+    this.stpCache = null;
   }
 
   // ---------- Tables (pour les commandes show) ----------
@@ -590,7 +640,7 @@ export class Network {
           v = iface.accessVlan ?? 1;
           if (tag !== undefined && tag !== v) return;
         }
-        if (this.vlanExists(d, v)) forward(d, port, v);
+        if (this.vlanExists(d, v) && this.portActive(d, iface, v)) forward(d, this.logicalOf(d, iface), v);
         return;
       }
       let logical: Iface | undefined = iface;
@@ -613,8 +663,9 @@ export class Network {
       seen.add(key);
       const svi = sw.svis?.find((i) => i.name === `Vlan${v}`);
       if (inPort && svi && this.isUp(sw, svi)) found.push({ dev: sw, iface: svi });
-      for (const p of sw.ifaces) {
-        if (p.name === inPort || !this.isSwitchport(sw, p) || !this.portCarries(sw, p, v)) continue;
+      for (const l of this.logicalPorts(sw)) {
+        const p = l.phys;
+        if (l.name === inPort || !this.portCarries(sw, p, v) || !this.portActive(sw, p, v)) continue;
         emit(sw, p.name, this.opMode(sw, p) === "trunk" && v !== (p.nativeVlan ?? 1) ? v : undefined);
       }
     };
@@ -623,8 +674,9 @@ export class Network {
     if (isSvi(name)) {
       seen.add(`${dev.id}|vlan${vlanOf(name)}`);
       const v = vlanOf(name);
-      for (const p of dev.ifaces) {
-        if (!this.isSwitchport(dev, p) || !this.portCarries(dev, p, v)) continue;
+      for (const l of this.logicalPorts(dev)) {
+        const p = l.phys;
+        if (!this.portCarries(dev, p, v) || !this.portActive(dev, p, v)) continue;
         emit(dev, p.name, this.opMode(dev, p) === "trunk" && v !== (p.nativeVlan ?? 1) ? v : undefined);
       }
     } else if (isSubif(name)) {
@@ -781,6 +833,190 @@ export class Network {
     return state;
   }
 
+  // ---------- EtherChannel ----------
+
+  /** Membres d'un EtherChannel : ceux qui forment réellement le lien agrégé avec le switch d'en face. */
+  bundle(dev: Device, group: number): { all: Iface[]; members: Iface[]; protocol: "LACP" | "PAgP" | "-" } {
+    const all = dev.ifaces.filter((i) => i.channel?.group === group);
+    const proto = (m?: string) => (m === "active" || m === "passive" ? "LACP" : m === "desirable" || m === "auto" ? "PAgP" : "-");
+    const compatible = (a: string, b: string) =>
+      (a === "on" && b === "on") ||
+      (proto(a) === "LACP" && proto(b) === "LACP" && (a === "active" || b === "active")) ||
+      (proto(a) === "PAgP" && proto(b) === "PAgP" && (a === "desirable" || b === "desirable"));
+    let peerDev: string | null = null;
+    let peerGroup: number | null = null;
+    const members: Iface[] = [];
+    for (const m of all) {
+      if (!m.adminUp) continue;
+      const peer = this.peerOf(dev.id, m.name);
+      if (!peer || !peer.iface.adminUp || !peer.iface.channel || !isSwitchLike(peer.dev)) continue;
+      if (!compatible(m.channel!.mode, peer.iface.channel.mode)) continue;
+      if (peerDev && (peer.dev.id !== peerDev || peer.iface.channel.group !== peerGroup)) continue;
+      peerDev = peer.dev.id;
+      peerGroup = peer.iface.channel.group;
+      members.push(m);
+    }
+    return { all, members, protocol: proto(all[0]?.channel?.mode) as "LACP" | "PAgP" | "-" };
+  }
+
+  /** Nom logique d'un port : Port-channelN pour un membre agrégé, sinon le port lui-même. */
+  logicalOf(dev: Device, iface: Iface): string {
+    return iface.channel ? `Port-channel${iface.channel.group}` : iface.name;
+  }
+
+  /** Port physique qui transporte le trafic d'un port logique (premier membre actif d'un Port-channel). */
+  physOf(dev: Device, logical: string): Iface | undefined {
+    if (isPortChannel(logical)) return this.bundle(dev, Number(logical.slice(12))).members[0];
+    return dev.ifaces.find((i) => i.name === logical);
+  }
+
+  /** Ports logiques de commutation d'un switch (les membres d'un même Port-channel comptent pour un). */
+  logicalPorts(dev: Device): { name: string; phys: Iface }[] {
+    const out: { name: string; phys: Iface }[] = [];
+    const seen = new Set<number>();
+    for (const i of dev.ifaces) {
+      if (!this.isSwitchport(dev, i)) continue;
+      if (i.channel) {
+        if (seen.has(i.channel.group)) continue;
+        seen.add(i.channel.group);
+        const first = this.bundle(dev, i.channel.group).members[0];
+        if (first) out.push({ name: `Port-channel${i.channel.group}`, phys: first });
+        continue;
+      }
+      out.push({ name: i.name, phys: i });
+    }
+    return out;
+  }
+
+  // ---------- Spanning Tree (PVST+) ----------
+
+  private stpCache: Map<string, Map<number, StpVlan>> | null = null;
+
+  private bid(dev: Device, v: number) {
+    return { prio: (dev.stp?.priorities?.[String(v)] ?? 32768) + v, mac: dev.svis?.[0]?.mac ?? "ffff.ffff.ffff" };
+  }
+
+  private portCost(dev: Device, logical: string, phys: Iface): number {
+    if (phys.stpCost) return phys.stpCost;
+    const base = phys.name.startsWith("FastEthernet") ? 19 : 4;
+    if (isPortChannel(logical)) {
+      const n = this.bundle(dev, Number(logical.slice(12))).members.length;
+      if (n >= 2) return base === 19 ? 12 : 3;
+    }
+    return base;
+  }
+
+  private portNbr(dev: Device, logical: string): number {
+    if (isPortChannel(logical)) return 64 + Number(logical.slice(12));
+    return dev.ifaces.findIndex((i) => i.name === logical) + 1;
+  }
+
+  /** Calcule l'arbre de chaque VLAN : pont racine, ports racine, désignés et bloqués. */
+  stpState(): Map<string, Map<number, StpVlan>> {
+    if (this.stpCache) return this.stpCache;
+    const result = new Map<string, Map<number, StpVlan>>();
+    const switches = this.devices.filter((d) => isSwitchLike(d));
+    const vlans = new Set<number>([1]);
+    for (const d of switches) for (const v of d.vlans ?? []) vlans.add(v.id);
+    const cmpBid = (a: { prio: number; mac: string }, b: { prio: number; mac: string }) => a.prio - b.prio || a.mac.localeCompare(b.mac);
+    for (const v of vlans) {
+      const members = switches.filter((d) => this.vlanExists(d, v));
+      type End = { dev: Device; port: string; phys: Iface };
+      const links: { a: End; b: End }[] = [];
+      const edges = new Map<string, End[]>(); // ports vers des hôtes ou des routeurs
+      for (const d of members) {
+        for (const lp of this.logicalPorts(d)) {
+          if (!this.physUp(d, lp.phys) || !this.portCarries(d, lp.phys, v)) continue;
+          const peer = this.peerOf(d.id, lp.phys.name);
+          const peerIsSw = peer && this.isSwitchport(peer.dev, peer.iface) && this.vlanExists(peer.dev, v) && this.portCarries(peer.dev, peer.iface, v);
+          if (!peerIsSw) {
+            edges.set(d.id, [...(edges.get(d.id) ?? []), { dev: d, port: lp.name, phys: lp.phys }]);
+            continue;
+          }
+          const plog = this.logicalOf(peer!.dev, peer!.iface);
+          if (isPortChannel(plog) && this.physOf(peer!.dev, plog) !== peer!.iface) continue; // le lien agrégé n'est compté qu'une fois
+          if (d.id < peer!.dev.id) links.push({ a: { dev: d, port: lp.name, phys: lp.phys }, b: { dev: peer!.dev, port: plog, phys: peer!.iface } });
+        }
+      }
+      // composantes connexes
+      const adj = new Map<string, { me: End; other: End }[]>();
+      for (const l of links) {
+        adj.set(l.a.dev.id, [...(adj.get(l.a.dev.id) ?? []), { me: l.a, other: l.b }]);
+        adj.set(l.b.dev.id, [...(adj.get(l.b.dev.id) ?? []), { me: l.b, other: l.a }]);
+      }
+      const visited = new Set<string>();
+      for (const start of members) {
+        if (visited.has(start.id)) continue;
+        const comp: Device[] = [];
+        const q = [start];
+        visited.add(start.id);
+        while (q.length) {
+          const d = q.shift()!;
+          comp.push(d);
+          for (const e of adj.get(d.id) ?? []) if (!visited.has(e.other.dev.id)) (visited.add(e.other.dev.id), q.push(e.other.dev));
+        }
+        const root = comp.reduce((best, d) => (cmpBid(this.bid(d, v), this.bid(best, v)) < 0 ? d : best), comp[0]);
+        // coût jusqu'à la racine (Dijkstra : coût du port qui reçoit)
+        const dist = new Map<string, number>([[root.id, 0]]);
+        const done = new Set<string>();
+        while (true) {
+          let cur: string | null = null;
+          for (const [id, dd] of dist) if (!done.has(id) && (cur === null || dd < dist.get(cur)!)) cur = id;
+          if (cur === null) break;
+          done.add(cur);
+          for (const e of adj.get(cur) ?? []) {
+            const nd = dist.get(cur)! + this.portCost(e.other.dev, e.other.port, e.other.phys);
+            if (!dist.has(e.other.dev.id) || nd < dist.get(e.other.dev.id)!) dist.set(e.other.dev.id, nd);
+          }
+        }
+        const portId = (e: End) => ((e.phys.stpPrio ?? 128) << 16) + this.portNbr(e.dev, e.port);
+        const rootPort = new Map<string, string>();
+        for (const d of comp) {
+          if (d === root) continue;
+          let best: { key: number[]; port: string } | null = null;
+          for (const e of adj.get(d.id) ?? []) {
+            const ob = this.bid(e.other.dev, v);
+            const key = [dist.get(e.other.dev.id)! + this.portCost(d, e.me.port, e.me.phys), ob.prio, parseInt(ob.mac.replace(/\./g, ""), 16), portId(e.other), portId(e.me)];
+            if (!best || lexLess(key, best.key)) best = { key, port: e.me.port };
+          }
+          if (best) rootPort.set(d.id, best.port);
+        }
+        for (const d of comp) {
+          const ports = new Map<string, StpPort>();
+          for (const e of adj.get(d.id) ?? []) {
+            const mine = [dist.get(d.id)!, this.bid(d, v).prio, parseInt(this.bid(d, v).mac.replace(/\./g, ""), 16), portId(e.me)];
+            const theirs = [dist.get(e.other.dev.id)!, this.bid(e.other.dev, v).prio, parseInt(this.bid(e.other.dev, v).mac.replace(/\./g, ""), 16), portId(e.other)];
+            const iWin = !lexLess(theirs, mine);
+            const role: StpPort["role"] = rootPort.get(d.id) === e.me.port ? "Root" : iWin ? "Desg" : "Altn";
+            ports.set(e.me.port, { role, state: role === "Altn" ? "BLK" : "FWD", cost: this.portCost(d, e.me.port, e.me.phys), prio: e.me.phys.stpPrio ?? 128, nbr: this.portNbr(d, e.me.port), edge: false });
+          }
+          for (const e of edges.get(d.id) ?? []) ports.set(e.port, { role: "Desg", state: "FWD", cost: this.portCost(d, e.port, e.phys), prio: e.phys.stpPrio ?? 128, nbr: this.portNbr(d, e.port), edge: true });
+          const rp = rootPort.get(d.id);
+          const byDev = result.get(d.id) ?? new Map<number, StpVlan>();
+          byDev.set(v, { rootBid: this.bid(root, v), bid: this.bid(d, v), rootCost: dist.get(d.id) ?? 0, rootPort: rp, ports });
+          result.set(d.id, byDev);
+        }
+      }
+    }
+    this.stpCache = result;
+    return result;
+  }
+
+  /** Le port logique transmet-il dans ce VLAN (STP en état FWD) ? */
+  stpForwarding(dev: Device, logical: string, v: number): boolean {
+    const st = this.stpState().get(dev.id)?.get(v)?.ports.get(logical);
+    return !st || st.state === "FWD";
+  }
+
+  /** Un port physique peut-il recevoir/émettre dans ce VLAN (EtherChannel + STP) ? */
+  private portActive(dev: Device, iface: Iface, v: number): boolean {
+    if (iface.channel) {
+      const b = this.bundle(dev, iface.channel.group);
+      if (!b.members.includes(iface)) return false; // membre suspendu
+    }
+    return this.stpForwarding(dev, this.logicalOf(dev, iface), v);
+  }
+
   // ---------- Transport des trames ----------
 
   private queue: { dev: Device; port?: string; logical?: string; frame: Frame }[] = [];
@@ -821,8 +1057,8 @@ export class Network {
       v = iface.accessVlan ?? 1;
       if (frame.vlan !== undefined && frame.vlan !== v) return; // trame étiquetée sur un port d'accès : rejetée
     }
-    if (!this.vlanExists(sw, v)) return;
-    this.switchForward(sw, port, v, { ...frame, vlan: undefined });
+    if (!this.vlanExists(sw, v) || !this.portActive(sw, iface, v)) return;
+    this.switchForward(sw, this.logicalOf(sw, iface), v, { ...frame, vlan: undefined });
   }
 
   /** Commutation dans un VLAN : apprentissage, livraison à la SVI, transfert ou inondation. */
@@ -836,13 +1072,13 @@ export class Network {
     }
     if (svi && frame.dst === svi.mac) return;
     const known = frame.dst !== BROADCAST_MAC ? table.get(`${v}|${frame.dst}`) : undefined;
-    const outs = known ? [known] : sw.ifaces.filter((i) => this.isSwitchport(sw, i)).map((i) => i.name);
+    const outs = known ? [known] : this.logicalPorts(sw).map((l) => l.name);
     for (const p of outs) {
       if (p === inPort) continue;
-      const iface = sw.ifaces.find((i) => i.name === p)!;
-      if (!this.isSwitchport(sw, iface) || !this.portCarries(sw, iface, v)) continue;
+      const iface = this.physOf(sw, p);
+      if (!iface || !this.isSwitchport(sw, iface) || !this.portCarries(sw, iface, v) || !this.portActive(sw, iface, v)) continue;
       const tagged = this.opMode(sw, iface) === "trunk" && v !== (iface.nativeVlan ?? 1);
-      this.emitPhys(sw, p, { ...frame, vlan: tagged ? v : undefined });
+      this.emitPhys(sw, iface.name, { ...frame, vlan: tagged ? v : undefined });
     }
   }
 

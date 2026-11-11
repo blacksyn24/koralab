@@ -10,6 +10,7 @@ import {
   allIfaces,
   formatVlanList,
   isLoopback,
+  isPortChannel,
   isSubif,
   isSvi,
   isSwitchLike,
@@ -96,7 +97,7 @@ export class IosCli {
   prompt(): string {
     const h = this.dev.hostname;
     if (this.mode === "if") {
-      const kind = this.ifNames.length > 1 ? "if-range" : this.ifName && isSubif(this.ifName) ? "subif" : "if";
+      const kind = this.ifNames.length > 1 && !isPortChannel(this.ifNames[0]) ? "if-range" : this.ifName && isSubif(this.ifName) ? "subif" : "if";
       return `${h}(config-${kind})#`;
     }
     if (this.mode === "acl") return `${h}(config-${this.dev.acls?.find((a) => a.name === this.aclName)?.extended ? "ext" : "std"}-nacl)#`;
@@ -281,6 +282,28 @@ export class IosCli {
     { modes: EXEC, words: ["show", "ip", "protocols"], help: "Protocoles de routage actifs", run: ({ cli }) => cli.showProtocols(), only: L3 },
     { modes: EXEC, words: ["show", "ip", "route", "<word>"], help: "Filtrer : connected, static, ospf, ou une adresse", run: ({ cli, args }) => cli.showIpRoute(args[0]), only: NET },
     { modes: PRIV, words: ["clear", "ip", "ospf", "process"], help: "Redémarrer OSPF", run: ({ cli }) => ((cli.net.clearDynamic(), "Reset ALL OSPF processes? [no]: yes")), only: L3 },
+
+    // --- Spanning Tree ---
+    { modes: CONF, words: ["spanning-tree", "mode", "<word>"], help: "pvst ou rapid-pvst", run: ({ cli, args }) => cli.stpMode(args[0]), only: SW },
+    { modes: CONF, words: ["spanning-tree", "vlan", "<rest>"], help: "<vlan> priority <n> | root primary | root secondary", run: ({ cli, args }) => cli.stpVlan(args[0], true), only: SW },
+    { modes: CONF, words: ["no", "spanning-tree", "vlan", "<rest>"], help: "Priorité par défaut", run: ({ cli, args }) => cli.stpVlan(args[0], false), only: SW },
+    { modes: CONF, words: ["spanning-tree", "portfast", "<rest>"], help: "default | bpduguard default (edge facultatif)", run: ({ cli, args }) => cli.stpGlobal(args[0], true), only: SW },
+    { modes: CONF, words: ["no", "spanning-tree", "portfast", "<rest>"], help: "Désactiver", run: ({ cli, args }) => cli.stpGlobal(args[0], false), only: SW },
+    { modes: IFM, words: ["spanning-tree", "portfast"], help: "Port d'accès vers un hôte (passe tout de suite en FWD)", run: ({ cli }) => cli.eachPort((i) => void (i.portfast = true)), only: SW },
+    { modes: IFM, words: ["spanning-tree", "portfast", "<rest>"], help: "edge, trunk ou disable", run: ({ cli, args }) => cli.eachPort((i) => void (i.portfast = !args[0].toLowerCase().startsWith("dis"))), only: SW },
+    { modes: IFM, words: ["no", "spanning-tree", "portfast"], help: "Désactiver PortFast", run: ({ cli }) => cli.eachPort((i) => void (i.portfast = undefined)), only: SW },
+    { modes: IFM, words: ["spanning-tree", "bpduguard", "<word>"], help: "enable ou disable", run: ({ cli, args }) => cli.eachPort((i) => void (i.bpduguard = args[0].toLowerCase().startsWith("e"))), only: SW },
+    { modes: IFM, words: ["no", "spanning-tree", "bpduguard"], help: "BPDU Guard par défaut", run: ({ cli }) => cli.eachPort((i) => void (i.bpduguard = undefined)), only: SW },
+    { modes: IFM, words: ["spanning-tree", "cost", "<num>"], help: "Coût STP du port", run: ({ cli, args }) => cli.eachPort((i) => void (i.stpCost = Number(args[0]) || undefined)), only: SW },
+    { modes: IFM, words: ["spanning-tree", "port-priority", "<num>"], help: "Priorité du port (multiple de 16)", run: ({ cli, args }) => (Number(args[0]) % 16 ? "% Port Priority in increments of 16 is required" : cli.eachPort((i) => void (i.stpPrio = Number(args[0])))), only: SW },
+    { modes: EXEC, words: ["show", "spanning-tree"], help: "Spanning Tree de tous les VLAN", run: ({ cli }) => cli.showStp(null), only: SW },
+    { modes: EXEC, words: ["show", "spanning-tree", "vlan", "<num>"], help: "Spanning Tree d'un VLAN", run: ({ cli, args }) => cli.showStp(Number(args[0])), only: SW },
+    { modes: EXEC, words: ["show", "spanning-tree", "summary"], help: "Résumé du Spanning Tree", run: ({ cli }) => cli.showStpSummary(), only: SW },
+
+    // --- EtherChannel ---
+    { modes: IFM, words: ["channel-group", "<num>", "mode", "<word>"], help: "active/passive (LACP), desirable/auto (PAgP) ou on", run: ({ cli, args }) => cli.channelGroup(Number(args[0]), args[1]), only: SW },
+    { modes: IFM, words: ["no", "channel-group"], help: "Retirer le port de l'EtherChannel", run: ({ cli }) => cli.eachPort((i) => void (i.channel = undefined)), only: SW },
+    { modes: EXEC, words: ["show", "etherchannel", "summary"], help: "Résumé des EtherChannel", run: ({ cli }) => cli.showEtherchannel(), only: SW },
   ];
 
   /** Commandes acceptées et conservées dans la configuration, sans effet simulé pour l'instant. */
@@ -491,7 +514,7 @@ export class IosCli {
     if (!name) return INVALID;
     const iface = this.net.ensureIface(this.dev, name);
     if (!iface) return INVALID;
-    this.ifNames = [name];
+    this.ifNames = isPortChannel(name) ? [name, ...this.dev.ifaces.filter((i) => i.channel && `Port-channel${i.channel.group}` === name).map((i) => i.name)] : [name];
     this.mode = "if";
     this.vlanIds = [];
   }
@@ -559,7 +582,7 @@ export class IosCli {
 
   /** Comme each, mais seulement sur des ports physiques de switch (pas une SVI ni un port routé). */
   eachPort(fn: (i: Iface) => string | void): string {
-    if (this.ifaces.some((i) => !this.dev.ifaces.includes(i) || i.routed)) return INVALID;
+    if (this.ifaces.some((i) => (!this.dev.ifaces.includes(i) && !isPortChannel(i.name)) || i.routed)) return INVALID;
     const out = this.each(fn);
     this.net.clearDynamic();
     return out;
@@ -1040,6 +1063,167 @@ export class IosCli {
     ].join("\n");
   }
 
+  // ---------- Spanning Tree / EtherChannel ----------
+
+  private stpCfg() {
+    return (this.dev.stp ??= {});
+  }
+
+  stpMode(m: string): string | void {
+    const v = m.toLowerCase();
+    if ("rapid-pvst".startsWith(v) && v.length > 1) this.stpCfg().mode = "rapid-pvst";
+    else if ("pvst".startsWith(v)) this.stpCfg().mode = undefined;
+    else if (v === "mst") return "% MST n'est pas simulé : utilisez pvst ou rapid-pvst";
+    else return INVALID;
+    this.net.clearDynamic();
+  }
+
+  stpVlan(rest: string, on: boolean): string | void {
+    const m = rest.trim().toLowerCase().match(/^([\d,\-\s]+?)\s+(priority\s+(\d+)|root\s+(primary|secondary))$/) ?? (on ? null : rest.trim().match(/^([\d,\-\s]+)/));
+    if (!m) return INVALID;
+    const ids = parseVlanList(m[1].replace(/\s+/g, ""));
+    if (!ids?.size) return INVALID;
+    let prio: number | undefined;
+    if (on) {
+      if (m[3]) {
+        prio = Number(m[3]);
+        if (prio % 4096 || prio > 61440) return "% Bridge Priority must be in increments of 4096.\n% Allowed values are:\n  0     4096  8192  12288 16384 20480 24576 28672\n  32768 36864 40960 45056 49152 53248 57344 61440";
+      } else prio = m[4] === "primary" ? 24576 : 28672;
+    }
+    const pr = (this.stpCfg().priorities ??= {});
+    for (const v of ids) if (prio === undefined) delete pr[String(v)];
+    else pr[String(v)] = prio;
+    this.net.clearDynamic();
+  }
+
+  stpGlobal(rest: string, on: boolean): string | void {
+    const w = rest.toLowerCase().replace(/\bedge\b/, "").trim().replace(/\s+/g, " ");
+    if (w === "default") this.stpCfg().portfastDefault = on || undefined;
+    else if (w === "bpduguard default") this.stpCfg().bpduguardDefault = on || undefined;
+    else return INVALID;
+    this.net.clearDynamic();
+    if (on && w === "default") return "%Warning: this command enables portfast by default on all interfaces. You\n should now disable portfast explicitly on switched ports leading to hubs,\n switches and bridges as they may create temporary bridging loops.";
+  }
+
+  channelGroup(group: number, rawMode: string): string | void {
+    const modes = ["active", "passive", "on", "desirable", "auto"] as const;
+    const mode = modes.find((x) => x.startsWith(rawMode.toLowerCase()));
+    if (!mode || group < 1 || group > 48) return INVALID;
+    const lacp = (x?: string) => x === "active" || x === "passive";
+    const existing = this.dev.ifaces.find((i) => i.channel?.group === group && !this.ifNames.includes(i.name));
+    if (existing && lacp(existing.channel!.mode) !== lacp(mode) && existing.channel!.mode !== "on" && mode !== "on")
+      return `% Channel ${group} is already in ${lacp(existing.channel!.mode) ? "LACP" : "PAgP"} mode`;
+    const name = `Port-channel${group}`;
+    const created = !this.dev.portChannels?.some((p) => p.name === name);
+    const po = this.net.ensureIface(this.dev, name)!;
+    const template = created ? this.ifaces[0] : po;
+    const copy = (to: Iface, from: Iface) => {
+      to.mode = from.mode;
+      to.accessVlan = from.accessVlan;
+      to.nativeVlan = from.nativeVlan;
+      to.allowed = from.allowed;
+      to.nonegotiate = from.nonegotiate;
+      to.trunkEncap = from.trunkEncap;
+    };
+    const r = this.eachPort((i) => {
+      if (isPortChannel(i.name)) return INVALID;
+      i.channel = { group, mode };
+      if (template && template !== i) copy(i, template);
+    });
+    if (created && this.ifaces[0]) copy(po, this.ifaces[0]);
+    return [created ? `Creating a port-channel interface Port-channel ${group}` : "", r].filter(Boolean).join("\n");
+  }
+
+  showStp(only: number | null): string {
+    const st = this.net.stpState().get(this.dev.id);
+    if (!st) return "No spanning tree instance exists.";
+    const proto = this.dev.stp?.mode === "rapid-pvst" ? "rstp" : "ieee";
+    const blocks = [...st.entries()]
+      .filter(([v]) => only === null || v === only)
+      .sort((a, b) => a[0] - b[0])
+      .filter(([, x]) => x.ports.size > 0)
+      .map(([v, x]) => {
+        const isRoot = x.rootBid.mac === x.bid.mac && x.rootBid.prio === x.bid.prio;
+        const timers = "             Hello Time   2 sec  Max Age 20 sec  Forward Delay 15 sec";
+        const rows = [...x.ports.entries()]
+          .sort((a, b) => a[1].nbr - b[1].nbr)
+          .map(([port, p]) => {
+            const phys = this.net.physOf(this.dev, port);
+            const edge = phys?.portfast ?? (!!this.dev.stp?.portfastDefault && p.edge);
+            return `${shortIf(port).padEnd(20)}${p.role} ${p.state} ${String(p.cost).padEnd(10)}${`${p.prio}.${p.nbr}`.padEnd(9)}P2p${edge ? " Edge" : ""}`;
+          });
+        return [
+          `VLAN${String(v).padStart(4, "0")}`,
+          `  Spanning tree enabled protocol ${proto}`,
+          `  Root ID    Priority    ${x.rootBid.prio}`,
+          `             Address     ${x.rootBid.mac}`,
+          ...(isRoot ? [`             This bridge is the root`] : [`             Cost        ${x.rootCost}`, `             Port        ${this.net.physOf(this.dev, x.rootPort!) ? `${this.portNumber(x.rootPort!)} (${x.rootPort})` : x.rootPort}`]),
+          timers,
+          "",
+          `  Bridge ID  Priority    ${x.bid.prio}  (priority ${x.bid.prio - v} sys-id-ext ${v})`,
+          `             Address     ${x.bid.mac}`,
+          timers,
+          `             Aging Time  300 sec`,
+          "",
+          `Interface           Role Sts Cost      Prio.Nbr Type`,
+          `------------------- ---- --- --------- -------- --------------------------------`,
+          ...rows,
+        ].join("\n");
+      });
+    return blocks.length ? blocks.join("\n\n") : `Spanning tree instance(s) for vlan ${only} does not exist.`;
+  }
+
+  private portNumber(port: string) {
+    return isPortChannel(port) ? 64 + Number(port.slice(12)) : this.dev.ifaces.findIndex((i) => i.name === port) + 1;
+  }
+
+  showStpSummary(): string {
+    const st = this.net.stpState().get(this.dev.id);
+    const rows = [...(st?.entries() ?? [])]
+      .filter(([, x]) => x.ports.size)
+      .sort((a, b) => a[0] - b[0])
+      .map(([v, x]) => {
+        const c = (role: string, state: string) => [...x.ports.values()].filter((p) => (role === "*" || p.role === role) && p.state === state).length;
+        return `VLAN${String(v).padStart(4, "0")}                     ${c("*", "BLK")}         0        0        ${c("*", "FWD")}          ${x.ports.size}`;
+      });
+    const roots = [...(st?.entries() ?? [])].filter(([, x]) => x.rootBid.mac === x.bid.mac && x.ports.size).map(([v]) => `VLAN${String(v).padStart(4, "0")}`);
+    return [
+      `Switch is in ${this.dev.stp?.mode === "rapid-pvst" ? "rapid-pvst" : "pvst"} mode`,
+      `Root bridge for: ${roots.join(", ") || "none"}`,
+      `PortFast Default            is ${this.dev.stp?.portfastDefault ? "enabled" : "disabled"}`,
+      `PortFast BPDU Guard Default is ${this.dev.stp?.bpduguardDefault ? "enabled" : "disabled"}`,
+      "",
+      `Name                   Blocking Listening Learning Forwarding STP Active`,
+      `---------------------- -------- --------- -------- ---------- ----------`,
+      ...rows,
+    ].join("\n");
+  }
+
+  showEtherchannel(): string {
+    const groups = [...new Set(this.dev.ifaces.filter((i) => i.channel).map((i) => i.channel!.group))].sort((a, b) => a - b);
+    const rows = groups.map((g) => {
+      const b = this.net.bundle(this.dev, g);
+      const po = this.dev.portChannels?.find((p) => p.name === `Port-channel${g}`);
+      const poFlag = po && po.adminUp && b.members.length ? "SU" : "SD";
+      const ports = b.all.map((m) => `${shortIf(m.name)}(${!m.adminUp || !this.net.isUp(this.dev, m) ? "D" : b.members.includes(m) ? "P" : "s"})`).join("    ");
+      return `${String(g).padEnd(7)}${`Po${g}(${poFlag})`.padEnd(16)}${b.protocol.padEnd(10)}${ports}`;
+    });
+    return [
+      "Flags:  D - down        P - bundled in port-channel",
+      "        I - stand-alone s - suspended",
+      "        H - Hot-standby (LACP only)",
+      "        R - Layer3      S - Layer2",
+      "        U - in use      f - failed to allocate aggregator",
+      "",
+      `Number of channel-groups in use: ${groups.length}`,
+      `Number of aggregators:           ${groups.length}`,
+      "",
+      "Group  Port-channel  Protocol    Ports",
+      "------+-------------+-----------+-----------------------------------------------",
+      ...rows,
+    ].join("\n");
+  }
+
   // ---------- Connexions ----------
 
   connect(ip: string, port: number): string {
@@ -1133,7 +1317,8 @@ export class IosCli {
   }
 
   showTrunk(): string {
-    const trunks = this.dev.ifaces.filter((p) => this.net.isSwitchport(this.dev, p) && this.net.isUp(this.dev, p) && this.net.opMode(this.dev, p) === "trunk");
+    const logical = this.net.logicalPorts(this.dev).filter((l) => this.net.isUp(this.dev, l.phys) && this.net.opMode(this.dev, l.phys) === "trunk");
+    const trunks = logical.map((l) => ({ ...l.phys, name: l.name }));
     if (!trunks.length) return "";
     const modeOf = (p: Iface) => ({ trunk: "on", access: "off", "dynamic-auto": "auto", "dynamic-desirable": "desirable" })[p.mode ?? "dynamic-auto"];
     const allowedOf = (p: Iface) => (p.allowed ? (p.allowed === "none" ? "none" : p.allowed) : "1-4094");
@@ -1160,7 +1345,7 @@ export class IosCli {
 
   showIntStatus(): string {
     const rows = this.dev.ifaces.map((p) => {
-      const st = !p.adminUp ? "disabled" : this.net.isUp(this.dev, p) ? "connected" : "notconnect";
+      const st = !p.adminUp ? "disabled" : this.net.errDisabled(this.dev, p) ? "err-disabled" : this.net.isUp(this.dev, p) ? "connected" : "notconnect";
       const vlan = p.routed ? "routed" : this.net.opMode(this.dev, p) === "trunk" ? "trunk" : String(p.accessVlan ?? 1);
       const gig = p.name.startsWith("Gigabit");
       return `${shortIf(p.name).padEnd(10)}${p.description.slice(0, 18).padEnd(19)}${st.padEnd(13)}${vlan.padEnd(11)}${(st === "connected" ? "a-full" : "auto").padEnd(8)}${(st === "connected" ? (gig ? "a-1000" : "a-100") : "auto").padEnd(7)}${gig ? "10/100/1000BaseTX" : "10/100BaseTX"}`;
@@ -1355,6 +1540,13 @@ export class IosCli {
     for (const l of d.extra) if (!l.startsWith("crypto")) out.push(hide(l));
     if (d.extra.length) out.push("!");
     if (d.kind === "l3switch" && d.ipRouting) out.push("ip routing", "!");
+    if (isSwitchLike(d)) {
+      out.push(`spanning-tree mode ${d.stp?.mode ?? "pvst"}`);
+      if (d.stp?.portfastDefault) out.push("spanning-tree portfast default");
+      if (d.stp?.bpduguardDefault) out.push("spanning-tree portfast bpduguard default");
+      for (const [v, pr] of Object.entries(d.stp?.priorities ?? {})) out.push(`spanning-tree vlan ${v} priority ${pr}`);
+      out.push("!");
+    }
     for (const [a, b] of d.dhcpExcluded ?? []) out.push(`ip dhcp excluded-address ${a}${b !== a ? ` ${b}` : ""}`);
     if (d.dhcpExcluded?.length) out.push("!");
     for (const p of d.dhcpPools ?? []) {
@@ -1375,7 +1567,7 @@ export class IosCli {
       out.push(`interface ${i.name}`);
       if (i.description) out.push(` description ${i.description}`);
       if (isSubif(i.name) && i.encap) out.push(` encapsulation dot1Q ${i.encap}${i.native ? " native" : ""}`);
-      if (this.net.isSwitchport(d, i)) {
+      if (this.net.isSwitchport(d, i) || isPortChannel(i.name)) {
         if (i.trunkEncap) out.push(" switchport trunk encapsulation dot1q");
         if (i.accessVlan) out.push(` switchport access vlan ${i.accessVlan}`);
         if (i.nativeVlan) out.push(` switchport trunk native vlan ${i.nativeVlan}`);
@@ -1383,6 +1575,11 @@ export class IosCli {
         if (i.mode === "access" || i.mode === "trunk") out.push(` switchport mode ${i.mode}`);
         if (i.mode === "dynamic-desirable") out.push(" switchport mode dynamic desirable");
         if (i.nonegotiate) out.push(" switchport nonegotiate");
+        if (i.channel) out.push(` channel-group ${i.channel.group} mode ${i.channel.mode}`);
+        if (i.portfast) out.push(" spanning-tree portfast");
+        if (i.bpduguard !== undefined) out.push(` spanning-tree bpduguard ${i.bpduguard ? "enable" : "disable"}`);
+        if (i.stpCost) out.push(` spanning-tree cost ${i.stpCost}`);
+        if (i.stpPrio) out.push(` spanning-tree port-priority ${i.stpPrio}`);
       } else {
         if (i.routed) out.push(" no switchport");
         out.push(i.dhcp ? " ip address dhcp" : i.ip ? ` ip address ${i.ip} ${i.mask}` : " no ip address");
@@ -1401,6 +1598,7 @@ export class IosCli {
       out.push("!");
     };
     for (const i of d.loopbacks ?? []) ifaceBlock(i);
+    for (const i of d.portChannels ?? []) ifaceBlock(i);
     for (const i of d.ifaces) {
       ifaceBlock(i);
       for (const s of (d.subifs ?? []).filter((x) => parentOf(x.name) === i.name)) ifaceBlock(s);
