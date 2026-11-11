@@ -34,6 +34,24 @@ export type Iface = {
   nat?: "inside" | "outside"; // ip nat inside / outside
   helpers?: string[]; // ip helper-address (relais DHCP)
   dhcp?: boolean; // adresse obtenue par DHCP (ip address dhcp / PC en DHCP)
+  // --- OSPF (configuration d'interface) ---
+  ospfArea?: { pid: number; area: number }; // ip ospf <pid> area <n>
+  ospfCost?: number;
+  ospfPriority?: number;
+  ospfHello?: number;
+  ospfDead?: number;
+  ospfP2p?: boolean; // ip ospf network point-to-point
+};
+
+export type OspfConfig = {
+  pid: number;
+  routerId?: string;
+  networks: { ip: string; wildcard: string; area: number }[];
+  passive: string[];
+  passiveDefault?: boolean;
+  noPassive: string[];
+  defaultOriginate?: boolean;
+  refBw?: number; // auto-cost reference-bandwidth (Mbit/s), 100 par défaut
 };
 
 export type DhcpPool = { name: string; network?: string; mask?: string; router?: string; dns?: string; domain?: string; lease?: string };
@@ -43,7 +61,7 @@ export type NatConfig = { statics: { local: string; global: string }[]; pools: N
 
 export type Vlan = { id: number; name: string };
 
-export type StaticRoute = { network: string; mask: string; nextHop?: string; iface?: string };
+export type StaticRoute = { network: string; mask: string; nextHop?: string; iface?: string; ad?: number };
 
 export type Device = {
   id: string;
@@ -57,6 +75,10 @@ export type Device = {
   svis?: Iface[];
   /** Sous-interfaces des routeurs : GigabitEthernet0/0/0.10… */
   subifs?: Iface[];
+  /** Interfaces de bouclage : Loopback0… */
+  loopbacks?: Iface[];
+  /** Processus OSPF */
+  ospf?: OspfConfig;
   /** Base VLAN des switchs (le VLAN 1 existe toujours et n'y figure pas) */
   vlans?: Vlan[];
   /** Switch de couche 3 : « ip routing » activé */
@@ -103,6 +125,12 @@ type Frame = ({ type: "arp"; arp: ArpPayload } | { type: "ipv4"; ip: IpPacket })
 
 export type NatEntry = { proto: string; insideLocal: string; insideGlobal: string; localPort?: number; globalPort?: number; outside?: string; static?: boolean };
 
+/** Route candidate : connectée, statique ou OSPF. */
+export type RouteCand = { code: string; network: string; mask: string; prefix: number; ad: number; metric: number; out: Iface | null; nextHop: string | null; alt?: { out: Iface; nextHop: string }[]; cost?: number };
+export type OspfIf = { iface: Iface; area: number; passive: boolean; cost: number; dr?: string; bdr?: string; role?: string; nbrs?: number };
+export type OspfNeighbor = { rid: string; pri: number; state: string; address: string; iface: string; dead: number };
+export type OspfDevState = { rid: string | null; ifs: OspfIf[]; neighbors: OspfNeighbor[]; routes: RouteCand[] };
+
 export const SVI = "Vlan1";
 
 // ---------- Modèles d'équipements ----------
@@ -148,6 +176,7 @@ const PREFIX: Record<DeviceKind, string> = { router: "R", switch: "S", l3switch:
 export const isSwitchLike = (dev: Device) => dev.kind === "switch" || dev.kind === "l3switch";
 export const isSvi = (name: string) => /^Vlan\d+$/.test(name);
 export const isSubif = (name: string) => name.includes(".");
+export const isLoopback = (name: string) => /^Loopback\d+$/.test(name);
 export const vlanOf = (sviName: string) => Number(sviName.slice(4));
 export const parentOf = (subif: string) => subif.split(".")[0];
 
@@ -181,12 +210,12 @@ export function formatVlanList(set: Iterable<number>): string {
 
 /** Abréviation d'un nom d'interface : GigabitEthernet0/0/0 -> Gi0/0/0 */
 export function shortIf(name: string): string {
-  return name.replace(/^GigabitEthernet/, "Gi").replace(/^FastEthernet/, "Fa").replace(/^Vlan/, "Vl");
+  return name.replace(/^GigabitEthernet/, "Gi").replace(/^FastEthernet/, "Fa").replace(/^Vlan/, "Vl").replace(/^Loopback/, "Lo");
 }
 
 /** Toutes les interfaces d'un équipement (physiques, sous-interfaces, SVI). */
 export function allIfaces(dev: Device): Iface[] {
-  return [...dev.ifaces, ...(dev.subifs ?? []), ...(dev.svis ?? [])];
+  return [...dev.ifaces, ...(dev.subifs ?? []), ...(dev.svis ?? []), ...(dev.loopbacks ?? [])];
 }
 
 export function findIfaceOn(dev: Device, name: string): Iface | undefined {
@@ -202,6 +231,9 @@ export function resolveIfaceName(dev: Device, raw: string): string | null {
   const m = s.match(/^([a-z-]+)(\d+(?:\/\d+)*)(?:\.(\d+))?$/);
   if (!m) return null;
   const [, typed, num, sub] = m;
+  if ("loopback".startsWith(typed) && typed.length >= 2 && !sub && !num.includes("/")) {
+    return dev.kind === "router" || dev.kind === "l3switch" ? `Loopback${Number(num)}` : null;
+  }
   if ("vlan".startsWith(typed) && typed.length >= 1 && !sub) {
     const v = Number(num);
     return isSwitchLike(dev) && !num.includes("/") && v >= 1 && v <= 4094 ? `Vlan${v}` : null;
@@ -293,6 +325,11 @@ export class Network {
   ensureIface(dev: Device, name: string): Iface | undefined {
     const found = findIfaceOn(dev, name);
     if (found) return found;
+    if (isLoopback(name) && (dev.kind === "router" || dev.kind === "l3switch")) {
+      const lo: Iface = { name, mac: "0000.0000.0000", adminUp: true, description: "" };
+      dev.loopbacks = [...(dev.loopbacks ?? []), lo].sort((a, b) => a.name.localeCompare(b.name, "en", { numeric: true }));
+      return lo;
+    }
     if (isSvi(name) && isSwitchLike(dev)) {
       const svi: Iface = { name, mac: dev.svis?.[0]?.mac ?? makeMac(this.macSeed++), adminUp: true, description: "" };
       dev.svis = [...(dev.svis ?? []), svi].sort((a, b) => vlanOf(a.name) - vlanOf(b.name));
@@ -310,6 +347,7 @@ export class Network {
   removeIface(dev: Device, name: string) {
     if (isSvi(name)) dev.svis = (dev.svis ?? []).filter((i) => i.name !== name || name === SVI);
     if (isSubif(name)) dev.subifs = (dev.subifs ?? []).filter((i) => i.name !== name);
+    if (isLoopback(name)) dev.loopbacks = (dev.loopbacks ?? []).filter((i) => i.name !== name);
     this.clearDynamic();
   }
 
@@ -410,6 +448,7 @@ export class Network {
 
   /** État « up/up » d'une interface (physique, sous-interface ou SVI). */
   isUp(dev: Device, iface: Iface): boolean {
+    if (isLoopback(iface.name)) return iface.adminUp;
     if (isSvi(iface.name)) {
       const v = vlanOf(iface.name);
       if (!iface.adminUp || !this.vlanExists(dev, v)) return false;
@@ -425,6 +464,7 @@ export class Network {
   clearDynamic() {
     this.arp.clear();
     this.macTables.clear();
+    this.ospfCache = null;
   }
 
   // ---------- Tables (pour les commandes show) ----------
@@ -451,18 +491,20 @@ export class Network {
     return dev.kind === "router" || (dev.kind === "l3switch" && !!dev.ipRouting);
   }
 
-  /** Table de routage : routes connectées (C), locales (L) et statiques (S). */
+  /** Table de routage : la meilleure route pour chaque réseau (C, L, S, O…). */
   routingTable(dev: Device) {
-    const routes: { code: "C" | "L" | "S"; network: string; prefix: number; via?: string; iface?: string }[] = [];
-    for (const i of this.l3Ifaces(dev)) {
-      if (!i.ip || !i.mask || !this.isUp(dev, i)) continue;
-      routes.push({ code: "C", network: networkOf(i.ip, i.mask), prefix: maskToPrefix(i.mask), iface: i.name });
-      routes.push({ code: "L", network: i.ip, prefix: 32, iface: i.name });
+    const best = new Map<string, RouteCand>();
+    for (const c of this.candidates(dev)) {
+      const key = `${c.network}/${c.prefix}`;
+      const cur = best.get(key);
+      if (!cur || c.ad < cur.ad || (c.ad === cur.ad && c.metric < cur.metric)) best.set(key, c);
     }
-    for (const r of dev.routes) {
-      if (this.resolveStatic(dev, r)) routes.push({ code: "S", network: r.network, prefix: maskToPrefix(r.mask), via: r.nextHop, iface: r.iface });
-    }
-    return routes.sort((a, b) => (ipToInt(a.network) ?? 0) - (ipToInt(b.network) ?? 0) || a.prefix - b.prefix);
+    const locals = this.l3Ifaces(dev)
+      .filter((i) => i.ip && i.mask && this.isUp(dev, i) && !isLoopback(i.name))
+      .map((i) => ({ code: "L", network: i.ip!, prefix: 32, mask: "255.255.255.255", ad: 0, metric: 0, out: i, nextHop: null }) as RouteCand);
+    return [...best.values(), ...locals]
+      .map((r) => ({ code: r.code, network: r.network, prefix: r.prefix, via: r.nextHop ?? undefined, iface: r.out?.name, ad: r.ad, metric: r.metric, alt: r.alt }))
+      .sort((a, b) => (ipToInt(a.network) ?? 0) - (ipToInt(b.network) ?? 0) || a.prefix - b.prefix);
   }
 
   // ---------- Couche 3 ----------
@@ -470,8 +512,8 @@ export class Network {
   /** Interfaces qui portent une adresse IP. */
   l3Ifaces(dev: Device): Iface[] {
     if (dev.kind === "switch") return dev.svis ?? [];
-    if (dev.kind === "l3switch") return [...dev.ifaces.filter((i) => i.routed), ...(dev.svis ?? [])];
-    if (dev.kind === "router") return [...dev.ifaces, ...(dev.subifs ?? [])];
+    if (dev.kind === "l3switch") return [...dev.ifaces.filter((i) => i.routed), ...(dev.svis ?? []), ...(dev.loopbacks ?? [])];
+    if (dev.kind === "router") return [...dev.ifaces, ...(dev.subifs ?? []), ...(dev.loopbacks ?? [])];
     return dev.ifaces;
   }
 
@@ -485,8 +527,24 @@ export class Network {
       return out && this.isUp(dev, out) ? { out, nextHop: r.nextHop ?? null } : null;
     }
     if (!r.nextHop) return null;
-    const out = this.l3Ifaces(dev).find((i) => i.ip && i.mask && this.isUp(dev, i) && sameSubnet(i.ip, r.nextHop!, i.mask));
+    const out = this.l3Ifaces(dev).find((i) => i.ip && i.mask && this.isUp(dev, i) && !isLoopback(i.name) && sameSubnet(i.ip, r.nextHop!, i.mask));
     return out ? { out, nextHop: r.nextHop } : null;
+  }
+
+  /** Toutes les routes utilisables : connectées (DA 0), statiques (DA 1 ou choisie), OSPF (DA 110). */
+  private candidates(dev: Device): RouteCand[] {
+    const out: RouteCand[] = [];
+    for (const i of this.l3Ifaces(dev)) {
+      if (!i.ip || !i.mask || !this.isUp(dev, i)) continue;
+      const mask = isLoopback(i.name) && maskToPrefix(i.mask) === 32 ? i.mask : i.mask;
+      out.push({ code: "C", network: networkOf(i.ip, mask), mask, prefix: maskToPrefix(mask), ad: 0, metric: 0, out: i, nextHop: null });
+    }
+    for (const r of dev.routes) {
+      const res = this.resolveStatic(dev, r);
+      if (res) out.push({ code: "S", network: networkOf(r.network, r.mask), mask: r.mask, prefix: maskToPrefix(r.mask), ad: r.ad ?? (r.iface && !r.nextHop ? 0 : 1), metric: 0, out: res.out, nextHop: res.nextHop });
+    }
+    if (this.routes(dev)) out.push(...(this.ospfState().get(dev.id)?.routes ?? []));
+    return out;
   }
 
   /** Choisit l'interface de sortie et le prochain saut pour une destination. */
@@ -500,21 +558,227 @@ export class Network {
       const out = ifs.find((i) => sameSubnet(i.ip!, dev.gateway!, i.mask!));
       return out ? { out, nextHop: dev.gateway } : null;
     }
-    // Routeur : correspondance la plus longue entre routes connectées et statiques
-    let best: { out: Iface; nextHop: string; prefix: number } | null = null;
-    for (const i of ifs) {
-      if (!sameSubnet(i.ip!, dst, i.mask!)) continue;
-      const p = maskToPrefix(i.mask!);
-      if (!best || p > best.prefix) best = { out: i, nextHop: dst, prefix: p };
+    // Routeur : préfixe le plus long, puis distance administrative, puis métrique
+    let best: RouteCand | null = null;
+    for (const c of this.candidates(dev)) {
+      if (!sameSubnet(c.network, dst, c.mask)) continue;
+      if (!best || c.prefix > best.prefix || (c.prefix === best.prefix && (c.ad < best.ad || (c.ad === best.ad && c.metric < best.metric)))) best = c;
     }
-    for (const r of dev.routes) {
-      if (!sameSubnet(r.network, dst, r.mask)) continue;
-      const p = maskToPrefix(r.mask);
-      if (best && p <= best.prefix) continue;
-      const res = this.resolveStatic(dev, r);
-      if (res) best = { out: res.out, nextHop: res.nextHop ?? dst, prefix: p };
+    if (!best?.out) return null;
+    if (isLoopback(best.out.name)) return null; // destination sur une loopback : déjà traitée par ownsIp
+    return { out: best.out, nextHop: best.nextHop ?? dst };
+  }
+
+  // ---------- Joignabilité de couche 2 (sans envoyer de trames) ----------
+
+  /** Interfaces de couche 3 joignables en couche 2 depuis une interface (à travers switchs, VLAN et trunks). */
+  reachL3(dev: Device, name: string): { dev: Device; iface: Iface }[] {
+    const found: { dev: Device; iface: Iface }[] = [];
+    const seen = new Set<string>();
+    const visit = (d: Device, port: string, tag: number | undefined) => {
+      const key = `${d.id}|${port}|${tag ?? "-"}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const iface = d.ifaces.find((i) => i.name === port);
+      if (!iface || !this.isUp(d, iface)) return;
+      if (this.isSwitchport(d, iface)) {
+        let v: number;
+        if (this.opMode(d, iface) === "trunk") {
+          v = tag ?? iface.nativeVlan ?? 1;
+          if (!this.portCarries(d, iface, v)) return;
+        } else {
+          v = iface.accessVlan ?? 1;
+          if (tag !== undefined && tag !== v) return;
+        }
+        if (this.vlanExists(d, v)) forward(d, port, v);
+        return;
+      }
+      let logical: Iface | undefined = iface;
+      if (d.kind === "router") {
+        const subs = (d.subifs ?? []).filter((x) => parentOf(x.name) === port && x.encap);
+        if (tag !== undefined) logical = subs.find((x) => x.encap === tag);
+        else logical = subs.find((x) => x.native) ?? iface;
+      } else if (tag !== undefined) return;
+      if (logical && this.isUp(d, logical)) found.push({ dev: d, iface: logical });
+    };
+    const emit = (d: Device, port: string, tag: number | undefined) => {
+      const iface = d.ifaces.find((i) => i.name === port);
+      if (!iface || !this.isUp(d, iface)) return;
+      const peer = this.peerOf(d.id, port);
+      if (peer) visit(peer.dev, peer.iface.name, tag);
+    };
+    const forward = (sw: Device, inPort: string | null, v: number) => {
+      const key = `${sw.id}|vlan${v}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const svi = sw.svis?.find((i) => i.name === `Vlan${v}`);
+      if (inPort && svi && this.isUp(sw, svi)) found.push({ dev: sw, iface: svi });
+      for (const p of sw.ifaces) {
+        if (p.name === inPort || !this.isSwitchport(sw, p) || !this.portCarries(sw, p, v)) continue;
+        emit(sw, p.name, this.opMode(sw, p) === "trunk" && v !== (p.nativeVlan ?? 1) ? v : undefined);
+      }
+    };
+    const start = this.findIface(dev, name);
+    if (!start || !this.isUp(dev, start) || isLoopback(name)) return found;
+    if (isSvi(name)) {
+      seen.add(`${dev.id}|vlan${vlanOf(name)}`);
+      const v = vlanOf(name);
+      for (const p of dev.ifaces) {
+        if (!this.isSwitchport(dev, p) || !this.portCarries(dev, p, v)) continue;
+        emit(dev, p.name, this.opMode(dev, p) === "trunk" && v !== (p.nativeVlan ?? 1) ? v : undefined);
+      }
+    } else if (isSubif(name)) {
+      if (start.encap) emit(dev, parentOf(name), start.native ? undefined : start.encap);
+    } else emit(dev, name, undefined);
+    return found.filter((f) => f.dev.id !== dev.id);
+  }
+
+  // ---------- OSPF ----------
+
+  private ospfCache: Map<string, OspfDevState> | null = null;
+
+  /** Interfaces où OSPF est actif (commande network ou ip ospf … area). */
+  private ospfIfs(dev: Device): OspfIf[] {
+    const cfg = dev.ospf;
+    const out: OspfIf[] = [];
+    if (!this.routes(dev)) return out;
+    for (const i of this.l3Ifaces(dev)) {
+      if (!i.ip || !i.mask || !this.isUp(dev, i)) continue;
+      let area: number | undefined;
+      if (i.ospfArea && cfg && i.ospfArea.pid === cfg.pid) area = i.ospfArea.area;
+      else if (cfg) {
+        const n = cfg.networks.find((x) => {
+          const wc = ipToInt(x.wildcard) ?? 0;
+          const care = ~wc >>> 0;
+          return ((ipToInt(i.ip!)! & care) >>> 0) === ((ipToInt(x.ip)! & care) >>> 0);
+        });
+        area = n?.area;
+      }
+      if (area === undefined || !cfg) continue;
+      const passive = isLoopback(i.name) || (cfg.passiveDefault ? !cfg.noPassive.includes(i.name) : cfg.passive.includes(i.name));
+      out.push({ iface: i, area, passive, cost: this.ospfCost(dev, i) });
     }
-    return best ? { out: best.out, nextHop: best.nextHop } : null;
+    return out;
+  }
+
+  ospfCost(dev: Device, i: Iface): number {
+    if (i.ospfCost) return i.ospfCost;
+    if (isLoopback(i.name)) return 1;
+    const phys = isSubif(i.name) ? parentOf(i.name) : i.name;
+    const bw = phys.startsWith("FastEthernet") ? 100 : 1000; // Mbit/s (SVI : 1 Gbit/s)
+    return Math.max(1, Math.floor((dev.ospf?.refBw ?? 100) / bw));
+  }
+
+  ospfRouterId(dev: Device): string | null {
+    if (dev.ospf?.routerId) return dev.ospf.routerId;
+    const ipsOf = (list: Iface[]) => list.filter((i) => i.ip && this.isUp(dev, i)).map((i) => i.ip!).sort((a, b) => ipToInt(b)! - ipToInt(a)!);
+    return ipsOf(dev.loopbacks ?? [])[0] ?? ipsOf(this.l3Ifaces(dev))[0] ?? null;
+  }
+
+  /** État OSPF de tout le réseau : voisins, DR/BDR et routes, recalculé après chaque changement. */
+  ospfState(): Map<string, OspfDevState> {
+    if (this.ospfCache) return this.ospfCache;
+    const state = new Map<string, OspfDevState>();
+    const routers = this.devices.filter((d) => d.ospf && this.routes(d));
+    for (const d of routers) state.set(d.id, { rid: this.ospfRouterId(d), ifs: this.ospfIfs(d), neighbors: [], routes: [] });
+    // Voisinages : même sous-réseau, même zone, mêmes timers, interfaces non passives
+    const edges = new Map<string, { to: Device; cost: number; out: Iface; nextHop: string }[]>();
+    for (const d of routers) {
+      const me = state.get(d.id)!;
+      if (!me.rid) continue;
+      const list: { to: Device; cost: number; out: Iface; nextHop: string }[] = [];
+      for (const oi of me.ifs) {
+        if (oi.passive) continue;
+        const nbrs: { dev: Device; oi: OspfIf; rid: string }[] = [];
+        for (const r of this.reachL3(d, oi.iface.name)) {
+          const other = state.get(r.dev.id);
+          const ooi = other?.ifs.find((x) => x.iface === r.iface);
+          if (!other?.rid || !ooi || ooi.passive || ooi.area !== oi.area) continue;
+          if (!r.iface.mask || r.iface.mask !== oi.iface.mask || !sameSubnet(r.iface.ip!, oi.iface.ip!, oi.iface.mask!)) continue;
+          if ((r.iface.ospfHello ?? 10) !== (oi.iface.ospfHello ?? 10) || (r.iface.ospfDead ?? 40) !== (oi.iface.ospfDead ?? 40)) continue;
+          if (other.rid === me.rid) continue; // ID de routeur en double : pas de voisinage
+          nbrs.push({ dev: r.dev, oi: ooi, rid: other.rid });
+        }
+        // Élection DR/BDR sur un segment de diffusion
+        const p2p = !!oi.iface.ospfP2p;
+        const cands = [{ rid: me.rid, pri: oi.iface.ospfPriority ?? 1, ip: oi.iface.ip! }, ...nbrs.map((n) => ({ rid: n.rid, pri: n.oi.iface.ospfPriority ?? 1, ip: n.oi.iface.ip! }))]
+          .filter((c) => c.pri > 0)
+          .sort((a, b) => b.pri - a.pri || ipToInt(b.rid)! - ipToInt(a.rid)!);
+        const dr = p2p ? null : (cands[0] ?? null);
+        const bdr = p2p ? null : (cands[1] ?? null);
+        const iAmDrOrBdr = dr?.rid === me.rid || bdr?.rid === me.rid;
+        for (const n of nbrs) {
+          const role = p2p ? "-" : n.rid === dr?.rid ? "DR" : n.rid === bdr?.rid ? "BDR" : "DROTHER";
+          const full = p2p || iAmDrOrBdr || role === "DR" || role === "BDR";
+          me.neighbors.push({ rid: n.rid, pri: n.oi.iface.ospfPriority ?? 1, state: `${full ? "FULL" : "2WAY"}/${role === "-" ? "  -" : role}`, address: n.oi.iface.ip!, iface: oi.iface.name, dead: n.oi.iface.ospfDead ?? 40 });
+          list.push({ to: n.dev, cost: oi.cost, out: oi.iface, nextHop: n.oi.iface.ip! });
+        }
+        oi.dr = dr?.ip;
+        oi.bdr = bdr?.ip;
+        oi.role = p2p ? "P2P" : dr?.rid === me.rid ? "DR" : bdr?.rid === me.rid ? "BDR" : nbrs.length ? "DROTHER" : "DR";
+        oi.nbrs = nbrs.length;
+      }
+      edges.set(d.id, list);
+    }
+    // Dijkstra depuis chaque routeur
+    for (const src of routers) {
+      const me = state.get(src.id)!;
+      if (!me.rid) continue;
+      const dist = new Map<string, number>([[src.id, 0]]);
+      const first = new Map<string, { out: Iface; nextHop: string }[]>([[src.id, []]]);
+      const done = new Set<string>();
+      while (true) {
+        let cur: string | null = null;
+        for (const [id, dd] of dist) if (!done.has(id) && (cur === null || dd < dist.get(cur)!)) cur = id;
+        if (cur === null) break;
+        done.add(cur);
+        for (const e of edges.get(cur) ?? []) {
+          const nd = dist.get(cur)! + e.cost;
+          const hops = cur === src.id ? [{ out: e.out, nextHop: e.nextHop }] : first.get(cur)!;
+          const old = dist.get(e.to.id);
+          if (old === undefined || nd < old) {
+            dist.set(e.to.id, nd);
+            first.set(e.to.id, [...hops]);
+          } else if (nd === old) first.set(e.to.id, [...first.get(e.to.id)!, ...hops.filter((h) => !first.get(e.to.id)!.some((x) => x.out === h.out && x.nextHop === h.nextHop))]);
+        }
+      }
+      const myAreas = new Set(me.ifs.map((x) => x.area));
+      const mine = new Set(me.ifs.map((x) => `${networkOf(x.iface.ip!, x.iface.mask!)}/${x.iface.mask}`));
+      const best = new Map<string, RouteCand>();
+      for (const other of routers) {
+        if (other.id === src.id || !dist.has(other.id)) continue;
+        const hops = first.get(other.id) ?? [];
+        if (!hops.length) continue;
+        const os = state.get(other.id)!;
+        for (const x of os.ifs) {
+          const loop = isLoopback(x.iface.name) && !x.iface.ospfP2p;
+          const mask = loop ? "255.255.255.255" : x.iface.mask!;
+          const network = networkOf(x.iface.ip!, mask);
+          if (mine.has(`${network}/${mask}`)) continue;
+          const metric = dist.get(other.id)! + x.cost;
+          const key = `${network}/${mask}`;
+          const cur = best.get(key);
+          if (cur && cur.metric === metric) {
+            // ECMP : même coût par un autre chemin -> chemin supplémentaire (4 au maximum)
+            const all = [{ out: cur.out!, nextHop: cur.nextHop! }, ...(cur.alt ?? [])];
+            for (const h of hops) if (all.length < 4 && !all.some((x) => x.out === h.out && x.nextHop === h.nextHop)) all.push(h);
+            cur.alt = all.slice(1);
+            continue;
+          }
+          if (cur && cur.metric < metric) continue;
+          best.set(key, { code: myAreas.has(x.area) ? "O" : "O IA", network, mask, prefix: maskToPrefix(mask), ad: 110, metric, out: hops[0].out, nextHop: hops[0].nextHop, alt: hops.slice(1) });
+        }
+        if (other.ospf?.defaultOriginate && other.routes.some((r) => r.network === "0.0.0.0" && r.mask === "0.0.0.0")) {
+          const cur = best.get("0.0.0.0/0.0.0.0");
+          const metric = 1;
+          if (!cur || dist.get(other.id)! < (cur.cost ?? Infinity))
+            best.set("0.0.0.0/0.0.0.0", { code: "O*E2", network: "0.0.0.0", mask: "0.0.0.0", prefix: 0, ad: 110, metric, out: hops[0].out, nextHop: hops[0].nextHop, cost: dist.get(other.id)! });
+        }
+      }
+      me.routes = [...best.values()];
+    }
+    this.ospfCache = state;
+    return state;
   }
 
   // ---------- Transport des trames ----------
@@ -531,6 +795,7 @@ export class Network {
 
   /** Émet une trame depuis une interface de couche 3 (physique, sous-interface ou SVI). */
   private emitL3(dev: Device, name: string, frame: Frame) {
+    if (isLoopback(name)) return;
     if (isSvi(name)) {
       this.switchForward(dev, null, vlanOf(name), { ...frame, vlan: undefined });
       return;

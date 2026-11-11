@@ -9,6 +9,7 @@ import {
   SVI,
   allIfaces,
   formatVlanList,
+  isLoopback,
   isSubif,
   isSvi,
   isSwitchLike,
@@ -24,8 +25,8 @@ import {
   type PortMode,
 } from "../network";
 
-type Mode = "user" | "priv" | "config" | "if" | "line" | "vlan" | "acl" | "dhcp";
-const SUB: Mode[] = ["if", "line", "vlan", "acl", "dhcp"];
+type Mode = "user" | "priv" | "config" | "if" | "line" | "vlan" | "acl" | "dhcp" | "router";
+const SUB: Mode[] = ["if", "line", "vlan", "acl", "dhcp", "router"];
 
 type Ctx = { args: string[]; raw: string; cli: IosCli };
 type Cmd = {
@@ -99,7 +100,7 @@ export class IosCli {
       return `${h}(config-${kind})#`;
     }
     if (this.mode === "acl") return `${h}(config-${this.dev.acls?.find((a) => a.name === this.aclName)?.extended ? "ext" : "std"}-nacl)#`;
-    return { user: `${h}>`, priv: `${h}#`, config: `${h}(config)#`, line: `${h}(config-line)#`, vlan: `${h}(config-vlan)#`, dhcp: `${h}(dhcp-config)#` }[this.mode as "user"];
+    return { user: `${h}>`, priv: `${h}#`, config: `${h}(config)#`, line: `${h}(config-line)#`, vlan: `${h}(config-vlan)#`, dhcp: `${h}(dhcp-config)#`, router: `${h}(config-router)#` }[this.mode as "user"];
   }
 
   /** Texte de la bannière : « banner motd #Accès réservé#  » -> « Accès réservé » */
@@ -149,8 +150,8 @@ export class IosCli {
     { modes: ["config", "if", "vlan"], words: ["interface", "<if>"], help: "Configurer une interface", run: ({ cli, args }) => cli.enterInterface(args[0]) },
     { modes: ["config", "if", "vlan"], words: ["interface", "range", "<rest>"], help: "Configurer plusieurs interfaces", run: ({ cli, args }) => cli.enterRange(args[0]), only: NET },
     { modes: CONF, words: ["no", "interface", "<if>"], help: "Supprimer une SVI ou une sous-interface", run: ({ cli, args }) => cli.removeInterface(args[0]) },
-    { modes: CONF, words: ["ip", "route", "<ip>", "<mask>", "<dest>"], help: "Route statique", run: ({ cli, args }) => cli.addRoute(args), only: L3 },
-    { modes: CONF, words: ["no", "ip", "route", "<ip>", "<mask>", "<dest>"], help: "Supprimer une route statique", run: ({ cli, args }) => cli.delRoute(args), only: L3 },
+    { modes: CONF, words: ["ip", "route", "<ip>", "<mask>", "<rest>"], help: "Route statique : prochain saut et/ou interface [distance]", run: ({ cli, args }) => cli.addRoute(args), only: L3 },
+    { modes: CONF, words: ["no", "ip", "route", "<ip>", "<mask>", "<rest>"], help: "Supprimer une route statique", run: ({ cli, args }) => cli.delRoute(args), only: L3 },
     { modes: CONF, words: ["ip", "routing"], help: "Activer le routage IP", run: ({ cli }) => void (cli.dev.ipRouting = true), only: L3 },
     { modes: CONF, words: ["no", "ip", "routing"], help: "Désactiver le routage IP", run: ({ cli }) => cli.noIpRouting(), only: L3 },
     {
@@ -249,6 +250,37 @@ export class IosCli {
     // --- Tests de connexion ---
     { modes: EXEC, words: ["telnet", "<ip>"], help: "Ouvrir une session telnet", run: ({ cli, args }) => cli.connect(args[0], 23) },
     { modes: EXEC, words: ["ssh", "<rest>"], help: "Ouvrir une session SSH (ssh -l utilisateur ip)", run: ({ cli, args }) => cli.connect(args[0].split(/\s+/).at(-1) ?? "", 22) },
+
+    // --- OSPF ---
+    { modes: CONF, words: ["router", "ospf", "<num>"], help: "Processus OSPF", run: ({ cli, args }) => cli.enterOspf(Number(args[0])), only: L3 },
+    { modes: CONF, words: ["no", "router", "ospf", "<num>"], help: "Supprimer le processus OSPF", run: ({ cli }) => void ((cli.dev.ospf = undefined), cli.net.clearDynamic()), only: L3 },
+    { modes: ["router"], words: ["network", "<ip>", "<mask>", "area", "<num>"], help: "Activer OSPF sur les interfaces de ce réseau (adresse wildcard area n)", run: ({ cli, args }) => cli.ospfNetwork(args, true) },
+    { modes: ["router"], words: ["no", "network", "<ip>", "<mask>", "area", "<num>"], help: "Retirer un réseau", run: ({ cli, args }) => cli.ospfNetwork(args, false) },
+    { modes: ["router"], words: ["router-id", "<ip>"], help: "Identifiant du routeur", run: ({ cli, args }) => cli.ospfSet((o) => (o.routerId = args[0]), args[0]) },
+    { modes: ["router"], words: ["no", "router-id"], help: "Identifiant automatique", run: ({ cli }) => cli.ospfSet((o) => (o.routerId = undefined)) },
+    { modes: ["router"], words: ["passive-interface", "default"], help: "Toutes les interfaces passives", run: ({ cli }) => cli.ospfSet((o) => ((o.passiveDefault = true), (o.noPassive = []))) },
+    { modes: ["router"], words: ["no", "passive-interface", "default"], help: "Plus d'interfaces passives par défaut", run: ({ cli }) => cli.ospfSet((o) => ((o.passiveDefault = false), (o.passive = []))) },
+    { modes: ["router"], words: ["passive-interface", "<if>"], help: "Ne pas envoyer de Hello sur l'interface", run: ({ cli, args }) => cli.ospfPassive(args[0], true) },
+    { modes: ["router"], words: ["no", "passive-interface", "<if>"], help: "Réactiver les Hello", run: ({ cli, args }) => cli.ospfPassive(args[0], false) },
+    { modes: ["router"], words: ["default-information", "originate"], help: "Annoncer la route par défaut", run: ({ cli }) => cli.ospfSet((o) => (o.defaultOriginate = true)) },
+    { modes: ["router"], words: ["no", "default-information", "originate"], help: "Ne plus annoncer la route par défaut", run: ({ cli }) => cli.ospfSet((o) => (o.defaultOriginate = undefined)) },
+    { modes: ["router"], words: ["auto-cost", "reference-bandwidth", "<num>"], help: "Bande passante de référence (Mbit/s)", run: ({ cli, args }) => cli.ospfSet((o) => (o.refBw = Number(args[0]) || 100)) },
+    { modes: IFM, words: ["ip", "ospf", "<num>", "area", "<num>"], help: "Activer OSPF sur l'interface", run: ({ cli, args }) => cli.ifOspf((i) => (i.ospfArea = { pid: Number(args[0]), area: Number(args[1]) })), only: L3 },
+    { modes: IFM, words: ["ip", "ospf", "cost", "<num>"], help: "Coût OSPF de l'interface", run: ({ cli, args }) => cli.ifOspf((i) => (i.ospfCost = Number(args[0]))), only: L3 },
+    { modes: IFM, words: ["ip", "ospf", "priority", "<num>"], help: "Priorité pour l'élection DR/BDR (0 = jamais DR)", run: ({ cli, args }) => cli.ifOspf((i) => (i.ospfPriority = Number(args[0]))), only: L3 },
+    { modes: IFM, words: ["ip", "ospf", "hello-interval", "<num>"], help: "Intervalle Hello (s)", run: ({ cli, args }) => cli.ifOspf((i) => ((i.ospfHello = Number(args[0])), i.ospfDead === undefined && (i.ospfDead = Number(args[0]) * 4))), only: L3 },
+    { modes: IFM, words: ["ip", "ospf", "dead-interval", "<num>"], help: "Délai Dead (s)", run: ({ cli, args }) => cli.ifOspf((i) => (i.ospfDead = Number(args[0]))), only: L3 },
+    { modes: IFM, words: ["ip", "ospf", "network", "point-to-point"], help: "Type de réseau point à point (pas de DR)", run: ({ cli }) => cli.ifOspf((i) => (i.ospfP2p = true)), only: L3 },
+    { modes: IFM, words: ["no", "ip", "ospf", "<rest>"], help: "Retirer un réglage OSPF", run: ({ cli, args }) => cli.noIfOspf(args[0]), only: L3 },
+    { modes: EXEC, words: ["show", "ip", "ospf", "neighbor"], help: "Voisins OSPF", run: ({ cli }) => cli.showOspfNeighbors(), only: L3 },
+    { modes: EXEC, words: ["show", "ip", "ospf", "interface", "brief"], help: "Interfaces OSPF (résumé)", run: ({ cli }) => cli.showOspfIfBrief(), only: L3 },
+    { modes: EXEC, words: ["show", "ip", "ospf", "interface", "<rest>"], help: "Interface OSPF en détail", run: ({ cli, args }) => cli.showOspfIf(args[0]), only: L3 },
+    { modes: EXEC, words: ["show", "ip", "ospf", "interface"], help: "Interfaces OSPF en détail", run: ({ cli }) => cli.showOspfIf(null), only: L3 },
+    { modes: EXEC, words: ["show", "ip", "ospf", "database"], help: "Base de données OSPF (LSA)", run: ({ cli }) => cli.showOspfDb(), only: L3 },
+    { modes: EXEC, words: ["show", "ip", "ospf"], help: "Processus OSPF", run: ({ cli }) => cli.showOspf(), only: L3 },
+    { modes: EXEC, words: ["show", "ip", "protocols"], help: "Protocoles de routage actifs", run: ({ cli }) => cli.showProtocols(), only: L3 },
+    { modes: EXEC, words: ["show", "ip", "route", "<word>"], help: "Filtrer : connected, static, ospf, ou une adresse", run: ({ cli, args }) => cli.showIpRoute(args[0]), only: NET },
+    { modes: PRIV, words: ["clear", "ip", "ospf", "process"], help: "Redémarrer OSPF", run: ({ cli }) => ((cli.net.clearDynamic(), "Reset ALL OSPF processes? [no]: yes")), only: L3 },
   ];
 
   /** Commandes acceptées et conservées dans la configuration, sans effet simulé pour l'instant. */
@@ -647,18 +679,36 @@ export class IosCli {
     this.net.clearDynamic();
   }
 
+  /** « 10.0.0.2 », « g0/0/1 », « g0/0/1 10.0.0.2 », avec une distance administrative facultative à la fin. */
+  private parseRouteTarget(rest: string): { nextHop?: string; iface?: string; ad?: number } | null {
+    const t = rest.trim().split(/\s+/);
+    let ad: number | undefined;
+    if (t.length > 1 && /^\d+$/.test(t.at(-1)!)) ad = Number(t.pop());
+    if (ad !== undefined && (ad < 1 || ad > 255)) return null;
+    if (t.length === 1 && isIp(t[0])) return { nextHop: t[0], ad };
+    // interface (éventuellement écrite en deux mots : « g 0/0/1 ») suivie ou non d'un prochain saut
+    const nh = isIp(t.at(-1) ?? "") && t.length > 1 ? t.pop() : undefined;
+    const iface = resolveIfaceName(this.dev, t.join(""));
+    return iface ? { iface, nextHop: nh, ad } : null;
+  }
+
   addRoute(args: string[]): string | void {
-    const [network, mask, dest] = args;
+    const [network, mask, rest] = args;
     if (!isIp(network) || !isMask(mask)) return INVALID;
-    const route = isIp(dest) ? { network, mask, nextHop: dest } : { network, mask, iface: resolveIfaceName(this.dev, dest) ?? undefined };
-    if (!route.nextHop && !route.iface) return INVALID;
-    this.dev.routes = [...this.dev.routes.filter((r) => !(r.network === network && r.mask === mask && r.nextHop === route.nextHop && r.iface === route.iface)), route];
+    const tgt = this.parseRouteTarget(rest);
+    if (!tgt) return INVALID;
+    const route = { network: networkOf(network, mask), mask, ...tgt };
+    if (route.ad === undefined) delete route.ad;
+    this.dev.routes = [...this.dev.routes.filter((r) => !(r.network === route.network && r.mask === mask && r.nextHop === route.nextHop && r.iface === route.iface)), route];
+    this.net.clearDynamic();
   }
 
   delRoute(args: string[]): string | void {
-    const [network, mask, dest] = args;
-    const iface = resolveIfaceName(this.dev, dest);
-    this.dev.routes = this.dev.routes.filter((r) => !(r.network === network && r.mask === mask && (r.nextHop === dest || r.iface === iface)));
+    const [network, mask, rest] = args;
+    const tgt = this.parseRouteTarget(rest);
+    if (!tgt) return INVALID;
+    this.dev.routes = this.dev.routes.filter((r) => !(r.network === networkOf(network, mask) && r.mask === mask && (tgt.nextHop ? r.nextHop === tgt.nextHop : true) && (tgt.iface ? r.iface === tgt.iface : true)));
+    this.net.clearDynamic();
   }
 
   crypto(rest: string): string {
@@ -847,6 +897,149 @@ export class IosCli {
     n.pools = [...n.pools.filter((p) => p.name !== name), { name, start, end, mask }];
   }
 
+  // ---------- OSPF ----------
+
+  enterOspf(pid: number): string | void {
+    if (!Number.isInteger(pid) || pid < 1 || pid > 65535) return INVALID;
+    if (!this.net.routes(this.dev)) return "% IP routing not enabled";
+    if (this.dev.ospf && this.dev.ospf.pid !== pid) return `% Un seul processus OSPF est simulé (ospf ${this.dev.ospf.pid} existe déjà)`;
+    this.dev.ospf ??= { pid, networks: [], passive: [], noPassive: [] };
+    this.mode = "router";
+    this.net.clearDynamic();
+  }
+
+  ospfSet(fn: (o: NonNullable<Device["ospf"]>) => unknown, ip?: string): string | void {
+    if (ip !== undefined && !isIp(ip)) return INVALID;
+    if (!this.dev.ospf) return;
+    fn(this.dev.ospf);
+    this.net.clearDynamic();
+  }
+
+  ospfNetwork(args: string[], add: boolean): string | void {
+    const [ip, wc, area] = args;
+    if (!isIp(ip) || !isIp(wc) || !/^\d+$/.test(area)) return INVALID;
+    return this.ospfSet((o) => {
+      o.networks = o.networks.filter((n) => !(n.ip === ip && n.wildcard === wc));
+      if (add) o.networks.push({ ip, wildcard: wc, area: Number(area) });
+    });
+  }
+
+  ospfPassive(raw: string, on: boolean): string | void {
+    const name = resolveIfaceName(this.dev, raw);
+    if (!name || !this.net.findIface(this.dev, name)) return INVALID;
+    return this.ospfSet((o) => {
+      if (o.passiveDefault) o.noPassive = on ? o.noPassive.filter((x) => x !== name) : [...new Set([...o.noPassive, name])];
+      else o.passive = on ? [...new Set([...o.passive, name])] : o.passive.filter((x) => x !== name);
+    });
+  }
+
+  ifOspf(fn: (i: Iface) => unknown): string | void {
+    const r = this.each((i) => void fn(i));
+    this.net.clearDynamic();
+    return r;
+  }
+
+  noIfOspf(rest: string): string | void {
+    const w = rest.trim().toLowerCase().split(/\s+/);
+    return this.ifOspf((i) => {
+      if (/^\d+$/.test(w[0])) i.ospfArea = undefined;
+      else if ("cost".startsWith(w[0])) i.ospfCost = undefined;
+      else if ("priority".startsWith(w[0])) i.ospfPriority = undefined;
+      else if (w[0].startsWith("hello")) i.ospfHello = undefined;
+      else if (w[0].startsWith("dead")) i.ospfDead = undefined;
+      else if ("network".startsWith(w[0])) i.ospfP2p = undefined;
+    });
+  }
+
+  private ospfMe() {
+    return this.net.ospfState().get(this.dev.id);
+  }
+
+  showOspfNeighbors(): string {
+    const me = this.ospfMe();
+    const rows = (me?.neighbors ?? []).map((n) => `${n.rid.padEnd(16)}${String(n.pri).padEnd(6)}${n.state.padEnd(16)}00:00:${String(n.dead - 4).padStart(2, "0")}    ${n.address.padEnd(16)}${n.iface}`);
+    return ["", `Neighbor ID     Pri   State           Dead Time   Address         Interface`, ...rows].join("\n");
+  }
+
+  showOspfIfBrief(): string {
+    const me = this.ospfMe();
+    const rows = (me?.ifs ?? []).map((x) => {
+      const st = isLoopback(x.iface.name) ? "LOOP" : x.iface.ospfP2p ? "P2P" : x.passive ? "DR" : (x.role ?? "DR");
+      return `${shortIf(x.iface.name).padEnd(13)}${String(this.dev.ospf?.pid ?? "").padEnd(6)}${String(x.area).padEnd(16)}${`${x.iface.ip}/${maskToPrefix(x.iface.mask!)}`.padEnd(19)}${String(x.cost).padEnd(6)}${st.padEnd(6)}${x.nbrs ?? 0}/${x.nbrs ?? 0}`;
+    });
+    return [`Interface    PID   Area            IP Address/Mask    Cost  State Nbrs F/C`, ...rows].join("\n");
+  }
+
+  showOspfIf(raw: string | null): string {
+    const me = this.ospfMe();
+    const name = raw ? resolveIfaceName(this.dev, raw) : null;
+    const list = (me?.ifs ?? []).filter((x) => !name || x.iface.name === name);
+    if (raw && !list.length) return `%OSPF: OSPF not enabled on ${name ?? raw}`;
+    return list
+      .map((x) =>
+        [
+          `${x.iface.name} is up, line protocol is up`,
+          `  Internet Address ${x.iface.ip}/${maskToPrefix(x.iface.mask!)}, Area ${x.area}`,
+          `  Process ID ${this.dev.ospf?.pid}, Router ID ${me?.rid}, Network Type ${isLoopback(x.iface.name) ? "LOOPBACK" : x.iface.ospfP2p ? "POINT_TO_POINT" : "BROADCAST"}, Cost: ${x.cost}`,
+          ...(isLoopback(x.iface.name) ? ["  Loopback interface is treated as a stub Host"] : [
+            `  Transmit Delay is 1 sec, State ${x.iface.ospfP2p ? "POINT_TO_POINT" : x.role ?? "DR"}, Priority ${x.iface.ospfPriority ?? 1}`,
+            ...(x.dr ? [`  Designated Router (ID) ${x.dr}`] : []),
+            ...(x.bdr ? [`  Backup Designated Router (ID) ${x.bdr}`] : []),
+            `  Timer intervals configured, Hello ${x.iface.ospfHello ?? 10}, Dead ${x.iface.ospfDead ?? 40}, Wait ${x.iface.ospfDead ?? 40}, Retransmit 5`,
+            x.passive ? "    No Hellos (Passive interface)" : `    Hello due in 00:00:0${Math.min(9, (x.iface.ospfHello ?? 10) - 3)}`,
+            `  Neighbor Count is ${x.nbrs ?? 0}, Adjacent neighbor count is ${x.nbrs ?? 0}`,
+          ]),
+        ].join("\n")
+      )
+      .join("\n");
+  }
+
+  showOspf(): string {
+    const me = this.ospfMe();
+    if (!this.dev.ospf) return "";
+    const areas = [...new Set((me?.ifs ?? []).map((x) => x.area))];
+    return [
+      ` Routing Process "ospf ${this.dev.ospf.pid}" with ID ${me?.rid ?? "0.0.0.0"}`,
+      ` Supports only single TOS(TOS0) routes`,
+      ` Reference bandwidth unit is ${this.dev.ospf.refBw ?? 100} mbps`,
+      ...(this.dev.ospf.defaultOriginate ? [" It is an autonomous system boundary router"] : []),
+      ` Number of areas in this router is ${areas.length}. ${areas.length} normal 0 stub 0 nssa`,
+      ...areas.map((a) => `    Area ${a === 0 ? "BACKBONE(0)" : a}\n        Number of interfaces in this area is ${(me?.ifs ?? []).filter((x) => x.area === a).length}`),
+    ].join("\n");
+  }
+
+  showOspfDb(): string {
+    const st = this.net.ospfState();
+    const me = this.ospfMe();
+    if (!me) return "";
+    const routers = [...st.values()].filter((x) => x.rid && x.ifs.some((i) => me.ifs.some((m) => m.area === i.area)));
+    const rows = routers.map((r) => `${r.rid!.padEnd(16)}${r.rid!.padEnd(16)}${"25".padEnd(9)}0x80000002 0x00A1B2 ${r.ifs.length}`);
+    return [`            OSPF Router with ID (${me.rid}) (Process ID ${this.dev.ospf?.pid})`, "", `                Router Link States (Area ${me.ifs[0]?.area ?? 0})`, "", `Link ID         ADV Router      Age      Seq#       Checksum Link count`, ...rows].join("\n");
+  }
+
+  showProtocols(): string {
+    const o = this.dev.ospf;
+    if (!o) return "*** IP Routing is NSF aware ***\n";
+    const me = this.ospfMe();
+    return [
+      `*** IP Routing is NSF aware ***`,
+      ``,
+      `Routing Protocol is "ospf ${o.pid}"`,
+      `  Outgoing update filter list for all interfaces is not set`,
+      `  Incoming update filter list for all interfaces is not set`,
+      `  Router ID ${me?.rid ?? "0.0.0.0"}`,
+      `  Number of areas in this router is ${new Set((me?.ifs ?? []).map((x) => x.area)).size}. 1 normal 0 stub 0 nssa`,
+      `  Maximum path: 4`,
+      `  Routing for Networks:`,
+      ...o.networks.map((n) => `    ${n.ip} ${n.wildcard} area ${n.area}`),
+      ...((o.passiveDefault ? (me?.ifs ?? []).filter((x) => x.passive).map((x) => x.iface.name) : o.passive).length ? [`  Passive Interface(s):`, ...(o.passiveDefault ? (me?.ifs ?? []).filter((x) => x.passive).map((x) => x.iface.name) : o.passive).map((x) => `    ${x}`)] : []),
+      `  Routing Information Sources:`,
+      `    Gateway         Distance      Last Update`,
+      ...(me?.neighbors ?? []).map((n) => `    ${n.rid.padEnd(16)}110           00:00:12`),
+      `  Distance: (default is 110)`,
+    ].join("\n");
+  }
+
   // ---------- Connexions ----------
 
   connect(ip: string, port: number): string {
@@ -873,20 +1066,34 @@ export class IosCli {
     return [`Interface              IP-Address      OK? Method Status                Protocol`, ...rows].join("\n");
   }
 
-  showIpRoute(): string {
+  showIpRoute(filter?: string): string {
     if (!this.net.routes(this.dev)) {
       return `Default gateway is ${this.dev.gateway ?? "not set"}\n\nHost               Gateway           Last Use    Total Uses  Interface\nICMP redirect cache is empty`;
     }
     const codes =
-      "Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP\n       D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area\n       * - candidate default, U - per-user static route\n";
-    const routes = this.net.routingTable(this.dev);
-    const def = routes.find((r) => r.code === "S" && r.prefix === 0);
+      "Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP\n       D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area\n       N1 - OSPF NSSA external type 1, N2 - OSPF NSSA external type 2\n       E1 - OSPF external type 1, E2 - OSPF external type 2\n       * - candidate default, U - per-user static route\n";
+    let routes = this.net.routingTable(this.dev);
+    const f = filter?.toLowerCase();
+    if (f && isIp(f)) {
+      const hit = routes.filter((r) => r.code !== "L" && networkOf(f, prefixToMask(r.prefix)) === r.network).sort((a, b) => b.prefix - a.prefix)[0];
+      if (!hit) return "% Network not in table";
+      return `Routing entry for ${hit.network}/${hit.prefix}\n  Known via "${hit.code.startsWith("O") ? `ospf ${this.dev.ospf?.pid}` : hit.code === "S" ? "static" : "connected"}", distance ${hit.ad}, metric ${hit.metric}\n  Routing Descriptor Blocks:\n  * ${hit.via ?? "directly connected"}${hit.iface ? `, via ${hit.iface}` : ""}`;
+    }
+    if (f) {
+      const want = "connected".startsWith(f) ? ["C", "L"] : "static".startsWith(f) ? ["S"] : "ospf".startsWith(f) ? ["O", "O IA", "O*E2"] : null;
+      if (!want) return INVALID;
+      routes = routes.filter((r) => want.includes(r.code));
+    }
+    const def = this.net.routingTable(this.dev).find((r) => r.prefix === 0);
     const gw = def ? `Gateway of last resort is ${def.via ?? def.iface} to network 0.0.0.0` : "Gateway of last resort is not set";
-    const lines = routes.map((r) => {
+    const lines = routes.flatMap((r) => {
       const code = r.code === "S" && r.prefix === 0 ? "S*" : r.code;
       const dest = `${r.network}/${r.prefix}`;
-      if (r.code === "S") return `${code.padEnd(9)}${dest} [1/0] ${r.via ? `via ${r.via}` : `is directly connected, ${r.iface}`}`;
-      return `${code.padEnd(9)}${dest} is directly connected, ${r.iface}`;
+      if (r.code === "C" || r.code === "L") return [`${code.padEnd(9)}${dest} is directly connected, ${r.iface}`];
+      if (r.code === "S" && !r.via) return [`${code.padEnd(9)}${dest} is directly connected, ${r.iface}`];
+      const age = r.code.startsWith("O") ? ", 00:00:12" : "";
+      const ifs = r.code.startsWith("O") ? `, ${r.iface}` : "";
+      return [`${code.padEnd(9)}${dest} [${r.ad}/${r.metric}] via ${r.via}${age}${ifs}`, ...(r.alt ?? []).map((a) => `${" ".repeat(9 + dest.length)} [${r.ad}/${r.metric}] via ${a.nextHop}${age}, ${a.out.name}`)];
     });
     return `${codes}\n${gw}\n\n${lines.join("\n")}`;
   }
@@ -1183,10 +1390,17 @@ export class IosCli {
         if (i.aclIn) out.push(` ip access-group ${i.aclIn} in`);
         if (i.aclOut) out.push(` ip access-group ${i.aclOut} out`);
         if (i.nat) out.push(` ip nat ${i.nat}`);
+        if (i.ospfArea) out.push(` ip ospf ${i.ospfArea.pid} area ${i.ospfArea.area}`);
+        if (i.ospfCost) out.push(` ip ospf cost ${i.ospfCost}`);
+        if (i.ospfPriority !== undefined) out.push(` ip ospf priority ${i.ospfPriority}`);
+        if (i.ospfHello) out.push(` ip ospf hello-interval ${i.ospfHello}`);
+        if (i.ospfDead) out.push(` ip ospf dead-interval ${i.ospfDead}`);
+        if (i.ospfP2p) out.push(" ip ospf network point-to-point");
       }
       if (!i.adminUp) out.push(" shutdown");
       out.push("!");
     };
+    for (const i of d.loopbacks ?? []) ifaceBlock(i);
     for (const i of d.ifaces) {
       ifaceBlock(i);
       for (const s of (d.subifs ?? []).filter((x) => parentOf(x.name) === i.name)) ifaceBlock(s);
@@ -1197,7 +1411,18 @@ export class IosCli {
     for (const r of d.nat?.rules ?? []) out.push(`ip nat inside source list ${r.acl} ${r.pool ? `pool ${r.pool}` : `interface ${r.iface}`}${r.overload ? " overload" : ""}`);
     for (const st of d.nat?.statics ?? []) out.push(`ip nat inside source static ${st.local} ${st.global}`);
     if (d.nat && (d.nat.pools.length || d.nat.rules.length || d.nat.statics.length)) out.push("!");
-    for (const r of d.routes) out.push(`ip route ${r.network} ${r.mask} ${r.nextHop ?? r.iface}`);
+    if (d.ospf) {
+      const o = d.ospf;
+      out.push(`router ospf ${o.pid}`);
+      if (o.routerId) out.push(` router-id ${o.routerId}`);
+      if (o.refBw) out.push(` auto-cost reference-bandwidth ${o.refBw}`);
+      if (o.passiveDefault) out.push(" passive-interface default");
+      for (const x of o.passiveDefault ? o.noPassive : o.passive) out.push(` ${o.passiveDefault ? "no " : ""}passive-interface ${x}`);
+      for (const n of o.networks) out.push(` network ${n.ip} ${n.wildcard} area ${n.area}`);
+      if (o.defaultOriginate) out.push(" default-information originate");
+      out.push("!");
+    }
+    for (const r of d.routes) out.push(`ip route ${r.network} ${r.mask} ${[r.iface, r.nextHop].filter(Boolean).join(" ")}${r.ad !== undefined ? ` ${r.ad}` : ""}`);
     if (d.routes.length) out.push("!");
     for (const a of d.acls ?? []) {
       if (/^\d+$/.test(a.name)) {
