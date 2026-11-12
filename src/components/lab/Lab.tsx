@@ -481,7 +481,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
         </Link>
         <span className="hidden rounded-full bg-amber-400/15 px-2 py-0.5 text-[11px] font-semibold text-amber-300 sm:inline">BÊTA</span>
         {tp ? (
-          <span className="ml-2 flex min-w-0 items-center gap-2 text-sm">
+          <span className="ml-2 flex min-w-0 flex-1 items-center gap-2 text-sm" title={tp.title}>
             <BookOpen size={15} className="shrink-0 text-kora-300" />
             <span className="truncate font-semibold text-white">{tp.title}</span>
           </span>
@@ -498,7 +498,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
             <Cloud size={15} /> <span className="hidden sm:inline">Enregistrer en ligne</span>
           </button>
         )}
-        <div className="ml-auto flex flex-wrap items-center gap-1.5 text-sm">
+        <div className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap text-sm">
           {tp ? (
             <>
               {tp.backHref && (
@@ -575,6 +575,47 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
               Les équipements reproduisent les commandes de chaque constructeur. KoraLab n&apos;est affilié à aucun d&apos;eux.
             </p>
           </div>
+        )}
+
+        {/* Mode TP : énoncé et résultats de la vérification */}
+        {tp && tpPanel && (
+          <aside className="flex w-[24rem] shrink-0 flex-col border-r border-white/8 bg-ink-900/80">
+            <div className="flex items-center justify-between border-b border-white/8 px-4 py-2.5">
+              <p className="font-semibold text-white">Énoncé</p>
+              <button onClick={() => setTpPanel(false)} aria-label="Masquer l'énoncé" className="text-kora-200/70 hover:text-white">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+              {remoteMsg && <p className="mb-3 rounded-xl bg-kora-500/15 px-3 py-2 text-sm text-kora-50 ring-1 ring-kora-300/30">{remoteMsg}</p>}
+              {results && (
+                <div className="mb-4 rounded-xl bg-ink-950 p-3 ring-1 ring-white/10">
+                  <p className="font-semibold">
+                    Score : {results.filter((r) => r.ok).length} / {results.length}
+                    {results.every((r) => r.ok) && " 🎉 TP réussi !"}
+                  </p>
+                  {!tp.brief?.steps?.length && <ul className="mt-2 space-y-2 text-sm">
+                    {results.map((r, i) => (
+                      <li key={i} className="flex gap-2">
+                        {r.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-ok" /> : <XCircle size={16} className="mt-0.5 shrink-0 text-ko" />}
+                        <span>
+                          <span className={r.ok ? "text-kora-50" : "text-white"}>{r.label}</span>
+                          {!r.ok && r.hint && <span className="block text-xs text-kora-200/60">{r.hint}</span>}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>}
+                  {!!tp.brief?.steps?.length && <p className="mt-1 text-xs text-kora-200/70">Le détail de chaque étape est indiqué ci-dessous.</p>}
+                </div>
+              )}
+              <TpBriefView brief={tp.brief} statement={tp.statement} initial={tp.initial} results={results} />
+            </div>
+            <div className="border-t border-white/8 p-3">
+              <button onClick={check} disabled={checking} className="flex w-full items-center justify-center gap-2 rounded-xl bg-ok/90 py-2 font-semibold text-ink-950 hover:bg-ok disabled:opacity-60">
+                {checking ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} {tp.remote ? "Soumettre ma solution" : "Vérifier mon TP"}
+              </button>
+            </div>
+          </aside>
         )}
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -688,47 +729,6 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
             </section>
           )}
         </div>
-
-        {/* Mode TP : énoncé et résultats de la vérification */}
-        {tp && tpPanel && (
-          <aside className="flex w-[24rem] shrink-0 flex-col border-l border-white/8 bg-ink-900/80">
-            <div className="flex items-center justify-between border-b border-white/8 px-4 py-2.5">
-              <p className="font-semibold text-white">Énoncé</p>
-              <button onClick={() => setTpPanel(false)} aria-label="Masquer l'énoncé" className="text-kora-200/70 hover:text-white">
-                <X size={16} />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-              {remoteMsg && <p className="mb-3 rounded-xl bg-kora-500/15 px-3 py-2 text-sm text-kora-50 ring-1 ring-kora-300/30">{remoteMsg}</p>}
-              {results && (
-                <div className="mb-4 rounded-xl bg-ink-950 p-3 ring-1 ring-white/10">
-                  <p className="font-semibold">
-                    Score : {results.filter((r) => r.ok).length} / {results.length}
-                    {results.every((r) => r.ok) && " 🎉 TP réussi !"}
-                  </p>
-                  {!tp.brief?.steps?.length && <ul className="mt-2 space-y-2 text-sm">
-                    {results.map((r, i) => (
-                      <li key={i} className="flex gap-2">
-                        {r.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-ok" /> : <XCircle size={16} className="mt-0.5 shrink-0 text-ko" />}
-                        <span>
-                          <span className={r.ok ? "text-kora-50" : "text-white"}>{r.label}</span>
-                          {!r.ok && r.hint && <span className="block text-xs text-kora-200/60">{r.hint}</span>}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>}
-                  {!!tp.brief?.steps?.length && <p className="mt-1 text-xs text-kora-200/70">Le détail de chaque étape est indiqué ci-dessous.</p>}
-                </div>
-              )}
-              <TpBriefView brief={tp.brief} statement={tp.statement} initial={tp.initial} results={results} />
-            </div>
-            <div className="border-t border-white/8 p-3">
-              <button onClick={check} disabled={checking} className="flex w-full items-center justify-center gap-2 rounded-xl bg-ok/90 py-2 font-semibold text-ink-950 hover:bg-ok disabled:opacity-60">
-                {checking ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />} {tp.remote ? "Soumettre ma solution" : "Vérifier mon TP"}
-              </button>
-            </div>
-          </aside>
-        )}
 
         {toast && <div className="absolute bottom-5 left-1/2 z-20 -translate-x-1/2 rounded-full bg-ink-800 px-4 py-2 text-sm text-white shadow-xl ring-1 ring-white/10">{toast}</div>}
       </div>
