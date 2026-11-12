@@ -6,7 +6,7 @@ import { firstMatch, type Acl } from "./acl";
 import { BROADCAST_MAC, broadcastOf, intToIp, ipToInt, isIp, makeMac, maskToPrefix, networkOf, sameSubnet } from "./ip";
 import { expand6, inPrefix6, isLinkLocal6, linkLocal, network6, withEui64 } from "./ip6";
 
-export type DeviceKind = "router" | "switch" | "l3switch" | "pc";
+export type DeviceKind = "router" | "switch" | "l3switch" | "pc" | "ap" | "wlc";
 
 /** Mode d'un port de switch tel que configuré (switchport mode …). */
 export type PortMode = "access" | "trunk" | "dynamic-auto" | "dynamic-desirable";
@@ -82,7 +82,21 @@ export type OspfConfig = {
   refBw?: number; // auto-cost reference-bandwidth (Mbit/s), 100 par défaut
 };
 
-export type DhcpPool = { name: string; network?: string; mask?: string; router?: string; dns?: string; domain?: string; lease?: string };
+export type DhcpPool = { name: string; network?: string; mask?: string; router?: string; dns?: string; domain?: string; lease?: string; wlc?: string };
+
+// ---------- Wi-Fi ----------
+export type WifiSecurity = "open" | "wpa2-psk" | "wpa3-psk" | "wpa2-ent" | "wpa3-ent";
+export type Wlan = { id: number; profile: string; ssid: string; enabled: boolean; iface: string; security: WifiSecurity; psk?: string };
+export type WlcIface = { name: string; vlan: number; ip?: string; mask?: string; gw?: string };
+export type WlcConfig = {
+  admin: { user: string; pass: string };
+  mgmt: WlcIface; // interface « management » ; vlan 0 = non étiquetée
+  ifaces: WlcIface[]; // interfaces dynamiques (une par VLAN de clients)
+  wlans: Wlan[];
+  radius: { ip: string; secret: string }[];
+  users: { user: string; pass: string }[]; // comptes Wi-Fi Entreprise (base locale du contrôleur)
+};
+export type WifiAssoc = { ap: Device; wlc: Device; wlan: Wlan; vlan: number };
 export type NatPool = { name: string; start: string; end: string; mask: string };
 export type NatRule = { acl: string; pool?: string; iface?: string; overload: boolean };
 export type NatConfig = { statics: { local: string; global: string }[]; pools: NatPool[]; rules: NatRule[] };
@@ -125,6 +139,10 @@ export type Device = {
   ipv6Routing?: boolean;
   routes6?: Route6[];
   gateway6?: string;
+  /** Wi-Fi : configuration du client, du point d'accès et du contrôleur */
+  wifi?: { ssid?: string; psk?: string; user?: string; pass?: string };
+  apCfg?: { dhcp: boolean; controller?: string; learned?: string; gateway?: string };
+  wlcCfg?: WlcConfig;
   /** DHCP snooping et inspection ARP dynamique */
   snooping?: { enabled: boolean; vlans: number[] };
   dai?: { vlans: number[] };
@@ -155,7 +173,7 @@ export type Link = { id: string; a: { dev: string; iface: string }; b: { dev: st
 
 type ArpPayload = { op: "req" | "rep"; senderIp: string; senderMac: string; targetIp: string };
 type IcmpType = "echo" | "reply" | "ttl-exceeded" | "unreachable";
-export type DhcpMsg = { op: "discover" | "ack" | "nak"; xid: number; chaddr: string; giaddr?: string; yiaddr?: string; mask?: string; router?: string; dns?: string; server?: string };
+export type DhcpMsg = { op: "discover" | "ack" | "nak"; xid: number; chaddr: string; giaddr?: string; yiaddr?: string; mask?: string; router?: string; dns?: string; server?: string; wlc?: string };
 type IpPacket = {
   src: string;
   dst: string;
@@ -230,10 +248,19 @@ export const MODELS: Record<string, ModelSpec> = {
     description: "Switch multicouche (couche 3) · 48 ports Gigabit + 4 uplinks Gigabit",
   },
   PC: { kind: "pc", label: "PC", ports: ["FastEthernet0"], description: "Ordinateur · 1 carte réseau" },
+  LAPTOP: { kind: "pc", label: "Portable Wi-Fi", ports: ["Wireless0"], description: "Ordinateur portable · carte Wi-Fi" },
+  PHONE: { kind: "pc", label: "Téléphone", ports: ["Wireless0"], description: "Smartphone · Wi-Fi" },
+  "KA-1800": { kind: "ap", label: "Point d'accès KA-1800", ports: ["GigabitEthernet0"], description: "Point d'accès léger (géré par un contrôleur)" },
+  "KW-3500": { kind: "wlc", label: "Contrôleur Wi-Fi KW-3500", ports: ["GigabitEthernet0/0/1", "GigabitEthernet0/0/2"], description: "Contrôleur Wi-Fi · configuration par interface web" },
 };
 
-const DEFAULT_MODEL: Record<DeviceKind, string> = { router: "KR-4300", switch: "KS-24", l3switch: "KX-24", pc: "PC" };
-const PREFIX: Record<DeviceKind, string> = { router: "R", switch: "S", l3switch: "MS", pc: "PC" };
+/** Portée radio d'un point d'accès sur le canevas (en pixels). */
+export const WIFI_RANGE = 460;
+
+const DEFAULT_MODEL: Record<DeviceKind, string> = { router: "KR-4300", switch: "KS-24", l3switch: "KX-24", pc: "PC", ap: "KA-1800", wlc: "KW-3500" };
+const PREFIX: Record<DeviceKind, string> = { router: "R", switch: "S", l3switch: "MS", pc: "PC", ap: "AP", wlc: "WLC" };
+
+export const isWireless = (dev: Device) => dev.ifaces[0]?.name === "Wireless0";
 
 // ---------- Outils ----------
 
@@ -355,7 +382,7 @@ export class Network {
 
   addDevice(kind: DeviceKind, x = 0, y = 0, model?: string): Device {
     const spec = MODELS[model ?? ""]?.kind === kind ? MODELS[model!] : MODELS[DEFAULT_MODEL[kind]];
-    const prefix = PREFIX[kind];
+    const prefix = model === "LAPTOP" ? "Laptop" : model === "PHONE" ? "Phone" : PREFIX[kind];
     let n = 1;
     while (this.devices.some((d) => d.hostname === `${prefix}${n}`)) n++;
     const dev: Device = {
@@ -374,7 +401,9 @@ export class Network {
       dev.svis = [{ name: SVI, mac: makeMac(this.macSeed++), adminUp: false, description: "" }];
       dev.vlans = [];
     }
-    if (kind === "router") dev.subifs = [];
+    if (kind === "router" || kind === "wlc") dev.subifs = [];
+    if (kind === "ap") dev.apCfg = { dhcp: true };
+    if (kind === "wlc") dev.wlcCfg = { admin: { user: "admin", pass: "admin" }, mgmt: { name: "management", vlan: 0 }, ifaces: [], wlans: [], radius: [], users: [] };
     this.devices.push(dev);
     return dev;
   }
@@ -449,6 +478,7 @@ export class Network {
     const b = this.getDevice(bId);
     if (!a || !b) return "Équipement introuvable";
     if (a.id === b.id) return "Impossible de relier un équipement à lui-même";
+    for (const d of [a, b]) if (isWireless(d)) return `${d.hostname} se connecte en Wi-Fi : ouvrez sa console et choisissez un réseau sans fil.`;
     const ai = aIface ?? this.freeIface(a, b.kind);
     const bi = bIface ?? this.freeIface(b, a.kind);
     if (!ai) return `${a.hostname} n'a plus d'interface libre`;
@@ -519,6 +549,7 @@ export class Network {
   /** Câble branché et les deux bouts activés. */
   private physUp(dev: Device, iface: Iface): boolean {
     if (!iface.adminUp) return false;
+    if (iface.name === "Wireless0") return !!this.assocOf(dev);
     const peer = this.peerOf(dev.id, iface.name);
     return !!peer && peer.iface.adminUp && !this.errDisabled(dev, iface) && !this.errDisabled(peer.dev, peer.iface);
   }
@@ -556,6 +587,7 @@ export class Network {
   }
 
   clearDynamic() {
+    this.wifiCache = null;
     this.hsrpCache = null;
     this.nd.clear();
     this.arp.clear();
@@ -611,6 +643,7 @@ export class Network {
     if (dev.kind === "switch") return dev.svis ?? [];
     if (dev.kind === "l3switch") return [...dev.ifaces.filter((i) => i.routed), ...(dev.svis ?? []), ...(dev.loopbacks ?? [])];
     if (dev.kind === "router") return [...dev.ifaces, ...(dev.subifs ?? []), ...(dev.loopbacks ?? [])];
+    if (dev.kind === "wlc") return dev.subifs ?? [];
     return dev.ifaces;
   }
 
@@ -1123,6 +1156,7 @@ export class Network {
 
   /** Met une trame sur le câble d'un port physique. */
   private emitPhys(dev: Device, port: string, frame: Frame) {
+    if (port === "Wireless0") return this.fromWirelessClient(dev, frame);
     const iface = dev.ifaces.find((i) => i.name === port);
     if (!iface || !this.isUp(dev, iface)) return;
     const peer = this.peerOf(dev.id, port);
@@ -1263,6 +1297,7 @@ export class Network {
 
   /** Une trame arrive sur une interface de couche 3 physique : choix de la sous-interface selon l'étiquette. */
   private l3Ingress(dev: Device, port: string, frame: Frame) {
+    if (dev.kind === "wlc") return this.wlcIngress(dev, port, frame);
     let logical = port;
     if (dev.kind === "router") {
       const subs = (dev.subifs ?? []).filter((s) => parentOf(s.name) === port && s.encap);
@@ -1278,7 +1313,10 @@ export class Network {
     this.receiveL3(dev, logical, frame);
   }
 
+  private running = false;
+
   private run() {
+    this.running = true;
     let steps = 0;
     while (this.queue.length && steps++ < 20000) {
       const { dev, port, logical, frame } = this.queue.shift()!;
@@ -1290,6 +1328,7 @@ export class Network {
       }
     }
     this.queue = [];
+    this.running = false;
   }
 
   private receiveL3(dev: Device, name: string, frame: Frame) {
@@ -1345,7 +1384,7 @@ export class Network {
     if (pkt.proto === "tcp" && pkt.tcp) {
       if (pkt.tcp.flag === "syn") {
         // Un équipement réseau accepte telnet (23) et ssh (22) ; un PC accepte le web (80/443) s'il joue le rôle de serveur
-        const open = dev.kind === "pc" ? [80, 443, 21] : [22, 23];
+        const open = dev.kind === "pc" ? [80, 443, 21] : dev.kind === "wlc" ? [22, 80, 443] : dev.kind === "ap" ? [] : [22, 23];
         this.sendIp(dev, { src: pkt.dst, dst: pkt.src, ttl: this.initialTtl(dev), proto: "tcp", sport: pkt.dport, dport: pkt.sport, tcp: { flag: open.includes(pkt.dport ?? 0) ? "synack" : "rst", id: pkt.tcp.id } });
       } else {
         const box = this.tcpInbox.get(dev.id) ?? [];
@@ -1471,7 +1510,7 @@ export class Network {
     const m = pkt.dhcp!;
     if (m.op === "discover") {
       const toMe = pkt.dst === IP_BROADCAST || this.ownsIp(dev, pkt.dst);
-      if (!toMe || dev.kind === "pc" || dev.kind === "switch") return true; // seuls les équipements de couche 3 servent ou relaient
+      if (!toMe || dev.kind === "pc" || dev.kind === "switch" || dev.kind === "ap" || dev.kind === "wlc") return true; // seuls les équipements de couche 3 servent ou relaient
       const subnetIp = m.giaddr ?? iface.ip;
       const pool = subnetIp ? (dev.dhcpPools ?? []).find((p) => p.network && p.mask && sameSubnet(p.network, subnetIp, p.mask)) : undefined;
       if (pool) {
@@ -1505,7 +1544,7 @@ export class Network {
     const leases = (dev.dhcpLeases ??= []);
     const mine = leases.find((l) => l.mac === m.chaddr && l.pool === pool.name);
     const server = this.l3Ifaces(dev).find((i) => i.ip)?.ip;
-    const base = { xid: m.xid, chaddr: m.chaddr, giaddr: m.giaddr, mask: pool.mask, router: pool.router, dns: pool.dns, server };
+    const base = { xid: m.xid, chaddr: m.chaddr, giaddr: m.giaddr, mask: pool.mask, router: pool.router, dns: pool.dns, server, wlc: pool.wlc };
     if (mine) return { op: "ack", yiaddr: mine.ip, ...base };
     const net = ipToInt(networkOf(pool.network!, pool.mask!))!;
     const bc = ipToInt(broadcastOf(pool.network!, pool.mask!))!;
@@ -1525,6 +1564,7 @@ export class Network {
    * diffusion DHCP sur le réseau, réponse d'un serveur local ou relayée.
    */
   dhcpRequest(dev: Device, ifaceName: string): DhcpMsg | null {
+    this.ensureWifi();
     const iface = this.findIface(dev, ifaceName);
     if (!iface || !this.isUp(dev, iface)) return null;
     const xid = this.icmpId++;
@@ -1537,10 +1577,11 @@ export class Network {
     if (!ack || ack.op !== "ack" || !ack.yiaddr) return ack ?? null;
     iface.ip = ack.yiaddr;
     iface.mask = ack.mask;
-    if (dev.kind === "pc") {
+    if (dev.kind === "pc" || dev.kind === "ap") {
       dev.gateway = ack.router;
       dev.dns = ack.dns;
     }
+    if (dev.kind === "ap" && dev.apCfg) dev.apCfg.learned = ack.wlc;
     this.arp.delete(dev.id);
     return ack;
   }
@@ -1740,6 +1781,7 @@ export class Network {
   }
 
   ping6(dev: Device, dst: string, count = 5): { ok: boolean; ttl?: number; from?: string; kind?: IcmpType }[] {
+    this.ensureWifi();
     const target = expand6(dst);
     const results: { ok: boolean; ttl?: number; from?: string; kind?: IcmpType }[] = [];
     if (!target) return results;
@@ -1760,6 +1802,7 @@ export class Network {
   }
 
   traceroute6(dev: Device, dst: string, maxHops = 15): (string | null)[] {
+    this.ensureWifi();
     const target = expand6(dst);
     const hops: (string | null)[] = [];
     if (!target) return hops;
@@ -1806,6 +1849,7 @@ export class Network {
 
   /** Envoie des pings et renvoie le résultat de chacun. */
   ping(dev: Device, dst: string, count = 5): { ok: boolean; ttl?: number; from?: string; kind?: IcmpType }[] {
+    this.ensureWifi();
     const results: { ok: boolean; ttl?: number; from?: string; kind?: IcmpType }[] = [];
     if (!isIp(dst)) return results;
     for (let seq = 0; seq < count; seq++) {
@@ -1826,6 +1870,7 @@ export class Network {
 
   /** Traceroute : chaque saut renvoie « TTL dépassé » jusqu'à la destination. */
   traceroute(dev: Device, dst: string, maxHops = 15): (string | null)[] {
+    this.ensureWifi();
     const hops: (string | null)[] = [];
     for (let ttl = 1; ttl <= maxHops; ttl++) {
       let hop: string | null = null;
@@ -1856,6 +1901,7 @@ export class Network {
 
   /** Essai de connexion TCP (telnet, ssh, http…) : ouvert, refusé, bloqué par une ACL ou sans réponse. */
   tcpConnect(dev: Device, dst: string, port: number): "open" | "refused" | "filtered" | "timeout" {
+    this.ensureWifi();
     if (!isIp(dst)) return "timeout";
     for (let attempt = 0; attempt < 3; attempt++) {
       const id = this.icmpId++;
@@ -1910,8 +1956,169 @@ export class Network {
     const keep = { id: dev.id, x: dev.x, y: dev.y, saved: dev.saved, startup: dev.startup };
     for (const k of Object.keys(dev) as (keyof Device)[]) delete (dev as Record<string, unknown>)[k];
     Object.assign(dev, fresh, keep);
-    if (!dev.saved) dev.hostname = { router: "Router", switch: "Switch", l3switch: "Switch", pc: dev.hostname }[dev.kind];
+    if (!dev.saved) dev.hostname = ({ router: "Router", switch: "Switch", l3switch: "Switch", pc: dev.hostname, ap: dev.hostname, wlc: dev.hostname } as Record<DeviceKind, string>)[dev.kind];
     this.clearDynamic();
+  }
+
+  // ---------- Wi-Fi : contrôleur, points d'accès, clients ----------
+
+  private wifiCache: { joined: Map<string, { wlc: Device | null; reason: string }>; assoc: Map<string, WifiAssoc | { error: string }> } | null = null;
+  private wifiBusy = false;
+
+  /** Recrée les interfaces logiques du contrôleur (management + dynamiques) sur son port de distribution. */
+  syncWlc(dev: Device) {
+    const c = dev.wlcCfg;
+    if (!c) return;
+    const up = dev.ifaces[0].name;
+    const mk = (x: WlcIface, mac: string): Iface | null =>
+      x.ip && x.mask ? { name: `${up}.${x.vlan || 0}`, mac, ip: x.ip, mask: x.mask, adminUp: true, description: x.name, encap: x.vlan || 1, native: x.vlan ? undefined : true } : null;
+    dev.subifs = [mk(c.mgmt, dev.ifaces[0].mac), ...c.ifaces.map((x) => mk(x, dev.ifaces[0].mac))].filter((x): x is Iface => !!x);
+    dev.gateway = c.mgmt.gw;
+    this.clearDynamic();
+  }
+
+  /** Adresse de gestion d'un contrôleur. */
+  wlcIp(dev: Device): string | undefined {
+    return dev.wlcCfg?.mgmt.ip;
+  }
+
+  /** Calcule (une fois) l'état du Wi-Fi : points d'accès enregistrés et clients associés. */
+  ensureWifi() {
+    if (this.wifiCache || this.wifiBusy) return;
+    if (!this.devices.some((d) => d.kind === "ap" || d.kind === "wlc")) {
+      this.wifiCache = { joined: new Map(), assoc: new Map() };
+      return;
+    }
+    this.wifiBusy = true;
+    const joined = new Map<string, { wlc: Device | null; reason: string }>();
+    try {
+      const wlcs = this.devices.filter((d) => d.kind === "wlc" && d.wlcCfg?.mgmt.ip);
+      for (const ap of this.devices.filter((d) => d.kind === "ap")) {
+        const nic = ap.ifaces[0];
+        if (!this.isUp(ap, nic)) {
+          joined.set(ap.id, { wlc: null, reason: "Le point d'accès n'est pas câblé (ou son port est éteint)." });
+          continue;
+        }
+        if (ap.apCfg?.dhcp !== false && !nic.ip) this.dhcpRequest(ap, nic.name);
+        if (!nic.ip) {
+          joined.set(ap.id, { wlc: null, reason: "Le point d'accès n'a pas d'adresse IP (aucun serveur DHCP n'a répondu dans son VLAN)." });
+          continue;
+        }
+        // Découverte du contrôleur : adresse configurée, option 43 du DHCP, ou contrôleur dans le même réseau
+        const target =
+          ap.apCfg?.controller ??
+          ap.apCfg?.learned ??
+          wlcs.find((w) => w.wlcCfg!.mgmt.mask && sameSubnet(w.wlcCfg!.mgmt.ip!, nic.ip!, nic.mask!))?.wlcCfg!.mgmt.ip;
+        const wlc = target ? wlcs.find((w) => w.wlcCfg!.mgmt.ip === target) : undefined;
+        if (!wlc) {
+          joined.set(ap.id, { wlc: null, reason: target ? `Aucun contrôleur ne répond à l'adresse ${target}.` : "Aucun contrôleur trouvé : même réseau, option 43 du DHCP ou adresse du contrôleur à configurer." });
+          continue;
+        }
+        const ok = this.ping(ap, wlc.wlcCfg!.mgmt.ip!, 3).some((r) => r.ok);
+        joined.set(ap.id, ok ? { wlc, reason: "" } : { wlc: null, reason: `Le contrôleur ${wlc.wlcCfg!.mgmt.ip} est injoignable depuis le point d'accès (VLAN, trunk ou routage).` });
+      }
+    } finally {
+      this.wifiBusy = false;
+    }
+    const assoc = new Map<string, WifiAssoc | { error: string }>();
+    for (const c of this.devices.filter((d) => isWireless(d) && d.wifi?.ssid)) {
+      assoc.set(c.id, this.associate(c, joined));
+    }
+    this.wifiCache = { joined, assoc };
+  }
+
+  /** Réseaux Wi-Fi visibles par un client (points d'accès enregistrés à portée). */
+  visibleSsids(client: Device): { ssid: string; security: WifiSecurity; ap: string }[] {
+    this.ensureWifi();
+    const out: { ssid: string; security: WifiSecurity; ap: string }[] = [];
+    for (const ap of this.apsInRange(client)) {
+      const wlc = this.wifiCache?.joined.get(ap.id)?.wlc;
+      for (const w of wlc?.wlcCfg?.wlans ?? []) if (w.enabled && !out.some((o) => o.ssid === w.ssid)) out.push({ ssid: w.ssid, security: w.security, ap: ap.hostname });
+    }
+    return out;
+  }
+
+  private apsInRange(client: Device) {
+    return this.devices.filter((d) => d.kind === "ap" && Math.hypot(d.x - client.x, d.y - client.y) <= WIFI_RANGE).sort((a, b) => Math.hypot(a.x - client.x, a.y - client.y) - Math.hypot(b.x - client.x, b.y - client.y));
+  }
+
+  private associate(c: Device, joined: Map<string, { wlc: Device | null; reason: string }>): WifiAssoc | { error: string } {
+    const want = c.wifi!;
+    const inRange = this.apsInRange(c);
+    if (!inRange.length) return { error: "Aucun point d'accès à portée : rapprochez l'appareil d'un point d'accès sur le canevas." };
+    const live = inRange.filter((ap) => joined.get(ap.id)?.wlc);
+    if (!live.length) return { error: joined.get(inRange[0].id)?.reason || "Le point d'accès n'est pas enregistré auprès d'un contrôleur." };
+    for (const ap of live) {
+      const wlc = joined.get(ap.id)!.wlc!;
+      const wlan = wlc.wlcCfg!.wlans.find((w) => w.ssid === want.ssid);
+      if (!wlan) continue;
+      if (!wlan.enabled) return { error: `Le réseau « ${want.ssid} » est désactivé sur le contrôleur.` };
+      if ((wlan.security === "wpa2-psk" || wlan.security === "wpa3-psk") && want.psk !== wlan.psk) return { error: "Mot de passe Wi-Fi incorrect (échec de l'authentification WPA)." };
+      if (wlan.security === "wpa2-ent" || wlan.security === "wpa3-ent") {
+        const ok = wlc.wlcCfg!.users.some((u) => u.user === want.user && u.pass === want.pass);
+        if (!ok) return { error: "Identifiant ou mot de passe refusé (authentification 802.1X)." };
+      }
+      const iface = wlan.iface === "management" ? wlc.wlcCfg!.mgmt : wlc.wlcCfg!.ifaces.find((i) => i.name === wlan.iface);
+      if (!iface) return { error: `Le réseau « ${want.ssid} » n'est relié à aucune interface du contrôleur.` };
+      return { ap, wlc, wlan, vlan: iface.vlan };
+    }
+    return { error: `Le réseau « ${want.ssid} » n'existe pas (aucun point d'accès ne le diffuse).` };
+  }
+
+  /** Association Wi-Fi d'un client (null si non connecté). */
+  assocOf(dev: Device): WifiAssoc | null {
+    if (!this.running) this.ensureWifi();
+    const a = this.wifiCache?.assoc.get(dev.id);
+    return a && "ap" in a ? a : null;
+  }
+
+  /** État Wi-Fi lisible : association, ou raison de l'échec. */
+  wifiStatus(dev: Device): WifiAssoc | { error: string } | null {
+    this.ensureWifi();
+    return this.wifiCache?.assoc.get(dev.id) ?? null;
+  }
+
+  /** État d'un point d'accès : contrôleur et raison si non enregistré. */
+  apStatus(ap: Device): { wlc: Device | null; reason: string } {
+    this.ensureWifi();
+    return this.wifiCache?.joined.get(ap.id) ?? { wlc: null, reason: "" };
+  }
+
+  /** Clients associés à un contrôleur. */
+  wlcClients(wlc: Device): { client: Device; a: WifiAssoc }[] {
+    this.ensureWifi();
+    return [...(this.wifiCache?.assoc.entries() ?? [])]
+      .map(([id, a]) => ({ client: this.getDevice(id)!, a }))
+      .filter((x): x is { client: Device; a: WifiAssoc } => !!x.client && "ap" in x.a && x.a.wlc === wlc);
+  }
+
+  wlcAps(wlc: Device): Device[] {
+    this.ensureWifi();
+    return this.devices.filter((d) => d.kind === "ap" && this.wifiCache?.joined.get(d.id)?.wlc === wlc);
+  }
+
+  /** Trame émise par un client sans fil : transportée (tunnel CAPWAP) jusqu'au contrôleur, puis sur le VLAN du WLAN. */
+  private fromWirelessClient(client: Device, frame: Frame) {
+    const a = this.assocOf(client);
+    if (!a) return;
+    // autres clients du même VLAN sur ce contrôleur
+    for (const { client: other, a: oa } of this.wlcClients(a.wlc)) {
+      if (other === client || oa.vlan !== a.vlan) continue;
+      if (frame.dst === BROADCAST_MAC || frame.dst === other.ifaces[0].mac) this.queue.push({ dev: other, port: "Wireless0", frame: { ...frame, vlan: undefined } });
+    }
+    const up = a.wlc.ifaces[0];
+    this.emitPhys(a.wlc, up.name, { ...frame, vlan: a.vlan ? a.vlan : undefined });
+  }
+
+  /** Trame reçue par le contrôleur sur son port : pour un client sans fil ou pour le contrôleur lui-même. */
+  private wlcIngress(wlc: Device, port: string, frame: Frame) {
+    const v = frame.vlan ?? 0;
+    for (const { client, a } of this.wlcClients(wlc)) {
+      if (a.vlan !== v) continue;
+      if (frame.dst === BROADCAST_MAC || frame.dst === client.ifaces[0].mac) this.queue.push({ dev: client, port: "Wireless0", frame: { ...frame, vlan: undefined } });
+    }
+    const sub = (wlc.subifs ?? []).find((s) => parentOf(s.name) === port && (v === 0 ? s.native : s.encap === v && !s.native));
+    if (sub) this.receiveL3(wlc, sub.name, frame);
   }
 
   // ---------- Sauvegarde ----------
@@ -1932,7 +2139,7 @@ export class Network {
         dev.svis = dev.svis ?? (svi ? [svi] : []);
         dev.vlans = dev.vlans ?? [];
       }
-      if (dev.kind === "router") dev.subifs = dev.subifs ?? [];
+      if (dev.kind === "router" || dev.kind === "wlc") dev.subifs = dev.subifs ?? [];
       return dev;
     });
     n.links = d.links;

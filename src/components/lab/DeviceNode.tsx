@@ -1,23 +1,25 @@
 "use client";
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { Layers, Monitor, Network as SwitchIcon, Router } from "lucide-react";
+import { Laptop, Layers, Monitor, Network as SwitchIcon, Router, Server, Smartphone, Wifi } from "lucide-react";
 import type { DeviceKind } from "@/engine/network";
 
 export type DeviceNodeData = { kind: DeviceKind; hostname: string; model: string; picked: boolean; cableMode: boolean };
 
-const ICONS = { router: Router, switch: SwitchIcon, l3switch: Layers, pc: Monitor };
+const ICONS = { router: Router, switch: SwitchIcon, l3switch: Layers, pc: Monitor, ap: Wifi, wlc: Server };
 const COLORS = {
   router: "from-kora-400 to-kora-500",
   switch: "from-sky-400 to-cyan-600",
   l3switch: "from-indigo-400 to-violet-600",
   pc: "from-slate-400 to-slate-600",
+  ap: "from-emerald-400 to-teal-600",
+  wlc: "from-fuchsia-400 to-purple-600",
 };
 
 /** Un équipement sur le canevas : icône, nom et modèle. */
 export function DeviceNode({ data, selected }: NodeProps) {
   const d = data as DeviceNodeData;
-  const Icon = ICONS[d.kind];
+  const Icon = d.model === "LAPTOP" ? Laptop : d.model === "PHONE" ? Smartphone : ICONS[d.kind];
   return (
     <div className={`flex w-28 flex-col items-center gap-1.5 ${d.cableMode ? "cursor-crosshair" : "cursor-grab"}`}>
       <div

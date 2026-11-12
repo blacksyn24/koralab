@@ -262,6 +262,8 @@ export class IosCli {
     { modes: ["dhcp"], words: ["default-router", "<ip>"], help: "Passerelle donnée aux clients", run: ({ cli, args }) => cli.poolSet("router", args[0]) },
     { modes: ["dhcp"], words: ["dns-server", "<ip>"], help: "Serveur DNS donné aux clients", run: ({ cli, args }) => cli.poolSet("dns", args[0]) },
     { modes: ["dhcp"], words: ["domain-name", "<word>"], help: "Nom de domaine", run: ({ cli, args }) => cli.poolSet("domain", args[0]) },
+    { modes: ["dhcp"], words: ["option", "43", "<rest>"], help: "Adresse du contrôleur Wi-Fi pour les points d'accès (hex f104… ou ip A.B.C.D)", run: ({ cli, args }) => cli.option43(args[0]) },
+    { modes: ["dhcp"], words: ["no", "option", "43"], help: "Retirer l'option 43", run: ({ cli }) => void (cli.pool() && (cli.pool()!.wlc = undefined)) },
     { modes: ["dhcp"], words: ["lease", "<rest>"], help: "Durée du bail (jours heures minutes)", run: ({ cli, args }) => cli.poolSet("lease", args[0]) },
     { modes: IFM, words: ["ip", "helper-address", "<ip>"], help: "Relais DHCP vers un serveur", run: ({ cli, args }) => cli.helper(args[0], true), only: L3 },
     { modes: IFM, words: ["no", "ip", "helper-address"], help: "Supprimer les relais DHCP", run: ({ cli }) => cli.each((i) => void (i.helpers = undefined)), only: L3 },
@@ -499,10 +501,11 @@ export class IosCli {
     const res = this.logged(this.dispatch(raw, this.mode) ?? "");
     // Depuis un sous-mode, IOS accepte aussi les commandes de configuration globale
     if (SUB.includes(this.mode) && /% (Invalid input|Incomplete command)/.test(res)) {
-      const before = this.mode;
+      const sub = () => JSON.stringify([this.entered, this.mode, this.ifNames, this.lineName, this.vlanIds, this.aclName, this.poolName]);
+      const before = sub();
       const alt = this.logged(this.dispatch(raw, "config") ?? "");
       if (!/% (Invalid input|Incomplete command)/.test(alt)) {
-        if (this.mode === before) {
+        if (sub() === before) {
           this.mode = "config";
           this.resetSub();
         }
@@ -722,6 +725,8 @@ export class IosCli {
     else return this.logout();
   }
 
+  private entered = 0;
+
   private resetSub() {
     this.ifNames = [];
     this.lineName = null;
@@ -744,6 +749,7 @@ export class IosCli {
     if (!iface) return INVALID;
     this.ifNames = isPortChannel(name) ? [name, ...this.dev.ifaces.filter((i) => i.channel && `Port-channel${i.channel.group}` === name).map((i) => i.name)] : [name];
     this.mode = "if";
+    this.entered++;
     this.vlanIds = [];
   }
 
@@ -752,6 +758,7 @@ export class IosCli {
     if (!names) return INVALID;
     this.ifNames = names;
     this.mode = "if";
+    this.entered++;
     this.vlanIds = [];
   }
 
@@ -767,6 +774,7 @@ export class IosCli {
     if (!m) return INVALID;
     this.lineName = m[1] ? "line con 0" : `line vty ${m[2]} ${m[3]}`;
     this.mode = "line";
+    this.entered++;
   }
 
   // ---------- VLAN ----------
@@ -781,6 +789,7 @@ export class IosCli {
     for (const v of ids) if (v !== 1 && !this.net.vlanExists(this.dev, v)) this.dev.vlans = [...(this.dev.vlans ?? []), { id: v, name: `VLAN${String(v).padStart(4, "0")}` }].sort((a, b) => a.id - b.id);
     this.vlanIds = [...ids];
     this.mode = "vlan";
+    this.entered++;
     this.net.clearDynamic();
   }
 
@@ -1014,6 +1023,7 @@ export class IosCli {
     if (typeof acl === "string") return acl;
     this.aclName = name;
     this.mode = "acl";
+    this.entered++;
   }
 
   aclLine(seq: number | null, text: string): string | void {
@@ -1053,9 +1063,10 @@ export class IosCli {
     if (!pools.some((p) => p.name === name)) pools.push({ name });
     this.poolName = name;
     this.mode = "dhcp";
+    this.entered++;
   }
 
-  private pool() {
+  pool() {
     return this.dev.dhcpPools?.find((p) => p.name === this.poolName);
   }
 
@@ -1073,6 +1084,18 @@ export class IosCli {
     if ((key === "router" || key === "dns") && !isIp(value)) return INVALID;
     const p = this.pool();
     if (p) p[key] = value;
+  }
+
+  option43(rest: string): string | void {
+    const [kind, val] = rest.trim().split(/\s+/);
+    let ip: string | undefined;
+    if (kind === "ip" && val && isIp(val)) ip = val;
+    const hex = (kind === "hex" ? val : "")?.replace(/\./g, "").toLowerCase();
+    if (hex && /^f104[0-9a-f]{8}$/.test(hex)) ip = [0, 1, 2, 3].map((k) => parseInt(hex.slice(4 + 2 * k, 6 + 2 * k), 16)).join(".");
+    if (!ip) return "% Format attendu : option 43 hex f104XXXXXXXX (adresse du contrôleur en hexadécimal) ou option 43 ip A.B.C.D";
+    const p = this.pool();
+    if (p) p.wlc = ip;
+    this.net.clearDynamic();
   }
 
   excluded(rest: string, add: boolean): string | void {
@@ -1158,6 +1181,7 @@ export class IosCli {
     if (this.dev.ospf && this.dev.ospf.pid !== pid) return `% Un seul processus OSPF est simulé (ospf ${this.dev.ospf.pid} existe déjà)`;
     this.dev.ospf ??= { pid, networks: [], passive: [], noPassive: [] };
     this.mode = "router";
+    this.entered++;
     this.net.clearDynamic();
   }
 
@@ -2196,6 +2220,7 @@ export class IosCli {
       if (p.dns) out.push(` dns-server ${p.dns}`);
       if (p.domain) out.push(` domain-name ${p.domain}`);
       if (p.lease) out.push(` lease ${p.lease}`);
+      if (p.wlc) out.push(` option 43 hex f104${p.wlc.split(".").map((o) => Number(o).toString(16).padStart(2, "0")).join("")}`);
       out.push("!");
     }
     for (const v of d.vlans ?? []) {

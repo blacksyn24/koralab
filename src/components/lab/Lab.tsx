@@ -13,14 +13,14 @@ import {
   type Node,
   type NodeChange,
 } from "@xyflow/react";
-import { BookOpen, Boxes, Cable, CheckCircle2, CircleHelp, Cloud, CloudCheck, CloudOff, Download, FilePlus2, FlaskConical, Layers, Loader2, Lock, Monitor, MousePointer2, Network as SwitchIcon, RotateCcw, Router, Server, Trash2, Upload, X, XCircle } from "lucide-react";
+import { BookOpen, Boxes, Cable, CheckCircle2, CircleHelp, Cloud, CloudCheck, CloudOff, Download, FilePlus2, FlaskConical, Globe, Laptop, Layers, Loader2, Lock, Monitor, MousePointer2, Network as SwitchIcon, RotateCcw, Router, Server, Smartphone, SquareTerminal, Trash2, Upload, Wifi, X, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IosCli } from "@/engine/cli/ios";
 import { PcCli } from "@/engine/cli/pc";
 import { isIp, isMask } from "@/engine/ip";
-import { Network, shortIf, type Device, type DeviceKind } from "@/engine/network";
+import { Network, isWireless, shortIf, type Device, type DeviceKind } from "@/engine/network";
 import { evaluate, type Check, type CheckResult } from "@/engine/checks";
 import { createLab } from "@/lib/labs";
 import { AccountMenu } from "../auth/AccountMenu";
@@ -28,6 +28,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { DeviceNode, type DeviceNodeData } from "./DeviceNode";
 import { LinkEdge, type LinkEdgeData } from "./LinkEdge";
 import { Terminal, type Shell } from "./Terminal";
+import { ApPanel, Browser, ClientWifiPanel, WifiEdge, WlcPanel } from "./Wifi";
 
 import { KoraLogo } from "@/components/Logo";
 import { askConfirm, askText } from "@/components/Dialog";
@@ -35,7 +36,7 @@ import { BackButton } from "@/components/BackButton";
 
 const STORAGE = "koralab:lab:v1";
 const nodeTypes = { device: DeviceNode };
-const edgeTypes = { link: LinkEdge };
+const edgeTypes = { link: LinkEdge, wifi: WifiEdge };
 
 /** Topologie de départ du TP 01 (non configurée) : un routeur, deux switchs, deux PC. */
 export function starter(): Network {
@@ -114,6 +115,16 @@ const LIBRARY: { vendor: string; color: string; items: { kind: DeviceKind; model
     vendor: "MikroTik (simulé)",
     color: "text-slate-300",
     items: [{ kind: "router", label: "RouterBOARD", icon: Router, soon: true }],
+  },
+  {
+    vendor: "Sans fil",
+    color: "text-fuchsia-300",
+    items: [
+      { kind: "wlc", model: "KW-3500", label: "Contrôleur Wi-Fi", detail: "interface web", icon: Server },
+      { kind: "ap", model: "KA-1800", label: "Point d'accès", detail: "léger (géré)", icon: Wifi },
+      { kind: "pc", model: "LAPTOP", label: "Portable", detail: "carte Wi-Fi", icon: Laptop },
+      { kind: "pc", model: "PHONE", label: "Téléphone", detail: "Wi-Fi", icon: Smartphone },
+    ],
   },
   {
     vendor: "Génériques",
@@ -310,7 +321,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
 
   const edges: Edge[] = useMemo(() => {
     if (!net) return [];
-    return net.links.map((l) => {
+    const cables: Edge[] = net.links.map((l) => {
       const a = net.getDevice(l.a.dev)!;
       const b = net.getDevice(l.b.dev)!;
       const ai = a.ifaces.find((i) => i.name === l.a.iface)!;
@@ -323,6 +334,11 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
         data: { aLabel: shortIf(l.a.iface), bLabel: shortIf(l.b.iface), aUp: net.isUp(a, ai), bUp: net.isUp(b, bi) } satisfies LinkEdgeData,
       };
     });
+    const radio: Edge[] = net.devices.flatMap((d) => {
+      const a = isWireless(d) ? net.assocOf(d) : null;
+      return a ? [{ id: `wifi-${d.id}`, source: a.ap.id, target: d.id, type: "wifi", deletable: false, selectable: false, focusable: false }] : [];
+    });
+    return [...cables, ...radio];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ver, net]);
 
@@ -338,7 +354,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
   const openConsole = (id: string) => {
     const d = net?.getDevice(id);
     if (!d) return;
-    if (!logs[id]) {
+    if (!logs[id] && d.kind !== "ap" && d.kind !== "wlc") {
       const sh = shellFor(d);
       const intro = d.kind === "pc" ? [sh.banner(), ""] : [`${d.hostname} con0 is now available`, "", "Press RETURN to get started.", "", ...(sh.banner() ? [sh.banner(), ""] : [])];
       setLogs((l) => ({ ...l, [id]: intro }));
@@ -386,7 +402,10 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
       if (c.type === "position" && c.position) {
         const d = net.getDevice(c.id);
         if (d) ((d.x = Math.round(c.position.x)), (d.y = Math.round(c.position.y)));
-        if (!c.dragging) dirty = true;
+        if (!c.dragging) {
+          dirty = true;
+          if (d && (d.kind === "ap" || isWireless(d))) net.clearDynamic(); // portée radio modifiée
+        }
       }
       if (c.type === "remove") {
         net.removeDevice(c.id);
@@ -443,6 +462,8 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
   };
 
   const activeDev = active ? net?.getDevice(active) : undefined;
+  const [pcView, setPcView] = useState<Record<string, "console" | "browser">>({});
+  const view = activeDev ? (pcView[activeDev.id] ?? "console") : "console";
 
   if (!ready || !net) return <div className="grid h-dvh place-items-center text-kora-200">Chargement du labo…</div>;
 
@@ -611,16 +632,53 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
                 })}
               </div>
               <div className="flex min-h-0 flex-1">
-                {activeDev.kind === "pc" && <PcConfig dev={activeDev} net={net} onChange={bump} />}
-                <div className="min-w-0 flex-1">
-                  <Terminal
-                    key={activeDev.id}
-                    shell={shellFor(activeDev)}
-                    lines={logs[activeDev.id] ?? []}
-                    onLines={(l) => setLogs((x) => ({ ...x, [activeDev.id]: l }))}
-                    onChange={bump}
-                  />
-                </div>
+                {activeDev.kind === "ap" ? (
+                  <ApPanel key={activeDev.id} dev={activeDev} net={net} onChange={bump} />
+                ) : activeDev.kind === "wlc" ? (
+                  <WlcPanel key={activeDev.id} dev={activeDev} net={net} onChange={bump} />
+                ) : (
+                  <>
+                    {activeDev.kind === "pc" && (
+                      <div className="w-60 shrink-0 space-y-4 overflow-y-auto border-r border-white/8 bg-ink-900/60 p-3">
+                        {isWireless(activeDev) && <ClientWifiPanel dev={activeDev} net={net} onChange={bump} />}
+                        <PcConfig dev={activeDev} net={net} onChange={bump} />
+                      </div>
+                    )}
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      {activeDev.kind === "pc" && (
+                        <div className="flex gap-1 border-b border-white/8 bg-ink-900/60 px-2 py-1 text-xs">
+                          {(
+                            [
+                              ["console", "Invite de commandes", SquareTerminal],
+                              ["browser", "Navigateur", Globe],
+                            ] as const
+                          ).map(([v, label, Icon]) => (
+                            <button
+                              key={v}
+                              onClick={() => setPcView((p) => ({ ...p, [activeDev.id]: v }))}
+                              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 ${view === v ? "bg-white/10 text-white" : "text-kora-200/70 hover:text-white"}`}
+                            >
+                              <Icon size={13} /> {label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <div className="min-h-0 flex-1">
+                        {activeDev.kind === "pc" && view === "browser" ? (
+                          <Browser dev={activeDev} net={net} onChange={bump} />
+                        ) : (
+                          <Terminal
+                            key={activeDev.id}
+                            shell={shellFor(activeDev)}
+                            lines={logs[activeDev.id] ?? []}
+                            onLines={(l) => setLogs((x) => ({ ...x, [activeDev.id]: l }))}
+                            onChange={bump}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             </section>
           )}
@@ -743,7 +801,7 @@ function PcConfig({ dev, net, onChange }: { dev: Device; net: Network; onChange:
   };
 
   return (
-    <div className="w-60 shrink-0 space-y-2.5 overflow-y-auto border-r border-white/8 bg-ink-900/60 p-3">
+    <div className="space-y-2.5">
       <p className="text-sm font-semibold text-white">Configuration IP</p>
       <button onClick={dhcp} className="w-full rounded-lg py-1.5 text-sm font-semibold text-kora-200 ring-1 ring-white/15 hover:bg-white/5 hover:text-white">
         {nic.dhcp ? "Renouveler (DHCP)" : "Obtenir par DHCP"}
@@ -776,6 +834,10 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
     ["spanning-tree vlan 1 root primary · spanning-tree portfast", "Spanning Tree (show spanning-tree)"],
     ["channel-group 1 mode active · interface port-channel 1", "EtherChannel (show etherchannel summary)"],
     ["switchport port-security · ip dhcp snooping · ip arp inspection", "Sécurité des ports"],
+    ["— Wi-Fi —", ""],
+    ["Contrôleur → adresse de gestion, puis PC → Navigateur → https://IP", "Interface web : réseaux, VLAN, sécurité, clients"],
+    ["Point d'accès : DHCP + option 43 hex f104… (ou même réseau)", "Enregistrement auprès du contrôleur"],
+    ["Portable / Téléphone : choisir le réseau, mot de passe, se connecter", "Placez-le près d'un point d'accès"],
     ["— Routage —", ""],
     ["interface g0/0/0.10 · encapsulation dot1Q 10", "Router-on-a-stick"],
     ["ip routing · interface vlan 10 · no switchport", "Switch de couche 3"],
