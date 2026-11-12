@@ -706,7 +706,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
                     Score : {results.filter((r) => r.ok).length} / {results.length}
                     {results.every((r) => r.ok) && " 🎉 TP réussi !"}
                   </p>
-                  <ul className="mt-2 space-y-2 text-sm">
+                  {!tp.brief?.steps?.length && <ul className="mt-2 space-y-2 text-sm">
                     {results.map((r, i) => (
                       <li key={i} className="flex gap-2">
                         {r.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-ok" /> : <XCircle size={16} className="mt-0.5 shrink-0 text-ko" />}
@@ -716,10 +716,11 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
                         </span>
                       </li>
                     ))}
-                  </ul>
+                  </ul>}
+                  {!!tp.brief?.steps?.length && <p className="mt-1 text-xs text-kora-200/70">Le détail de chaque étape est indiqué ci-dessous.</p>}
                 </div>
               )}
-              <TpBriefView brief={tp.brief} statement={tp.statement} initial={tp.initial} />
+              <TpBriefView brief={tp.brief} statement={tp.statement} initial={tp.initial} results={results} />
             </div>
             <div className="border-t border-white/8 p-3">
               <button onClick={check} disabled={checking} className="flex w-full items-center justify-center gap-2 rounded-xl bg-ok/90 py-2 font-semibold text-ink-950 hover:bg-ok disabled:opacity-60">

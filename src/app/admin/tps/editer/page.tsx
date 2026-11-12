@@ -18,6 +18,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { CheckEditor } from "@/components/admin/CheckEditor";
 import { TopologyBuilder } from "@/components/admin/TopologyBuilder";
+import { CommandsEditor, StepsEditor } from "@/components/admin/StepsEditor";
 import type { Check } from "@/engine/checks";
 import { Network, shortIf } from "@/engine/network";
 import { getLab, listLabs, type LabMeta } from "@/lib/labs";
@@ -39,6 +40,8 @@ const EMPTY: Form = {
   objectives: "",
   addressing: [],
   tips: "",
+  steps: [],
+  commands: [],
 };
 
 /** Réduit une image (WebP, 1600 px max) pour qu'elle tienne dans le document du TP. */
@@ -230,7 +233,18 @@ function Editor() {
     ["topo", "Topologie", devices.length > 0],
     ["enonce", "Énoncé", !!(form.context || form.objectives || form.statement)],
     ["criteres", "Critères", form.checks.length > 0],
+    ["etapes", "Étapes", form.steps.length > 0],
   ];
+  /** Garde les étapes rattachées aux bons critères quand un critère est supprimé. */
+  const setChecks = (next: Check[]) => {
+    const old = form.checks;
+    const remap = (i: number) => {
+      const j = next.indexOf(old[i]);
+      if (j >= 0) return j;
+      return next.length === old.length ? i : -1;
+    };
+    set({ checks: next, steps: form.steps.map((st) => ({ ...st, checks: st.checks.map(remap).filter((x) => x >= 0) })) });
+  };
 
   return (
     <div
@@ -631,8 +645,22 @@ function Editor() {
         <CheckEditor
           checks={form.checks}
           devices={devices}
-          onChange={(checks) => set({ checks })}
+          onChange={setChecks}
         />
+      </section>
+
+      {/* 5. Étapes guidées */}
+      <section id="etapes" className={`mt-6 ${card}`}>
+        <h2 className="font-semibold">5. Étapes guidées ({form.steps.length})</h2>
+        <p className="text-sm text-kora-200/70">
+          L&apos;étudiant voit les étapes une par une, avec une coche verte quand les critères de l&apos;étape sont réussis. Sans étape, l&apos;énoncé classique s&apos;affiche.
+        </p>
+        <StepsEditor steps={form.steps} checks={form.checks} devices={devices} onChange={(steps) => set({ steps })} />
+        <div className="border-t border-white/8 pt-4">
+          <h3 className="mb-1 text-sm font-semibold">Résumé des commandes ({form.commands.length})</h3>
+          <p className="mb-2 text-xs text-kora-200/60">Affiché à l&apos;étudiant, jamais traduit automatiquement par le navigateur.</p>
+          <CommandsEditor commands={form.commands} onChange={(commands) => set({ commands })} />
+        </div>
       </section>
     </div>
   );

@@ -38,6 +38,30 @@ Vérifiez que PC1 réussit à pinguer PC3.`,
         { device: "PC1", iface: "NIC", ip: "192.168.50.10", mask: "255.255.255.128", gw: "192.168.50.1" },
         { device: "PC3", iface: "NIC", ip: "192.168.50.140", mask: "255.255.255.192", gw: "192.168.50.129" },
       ],
+      steps: [
+        { title: "Nommer le routeur", body: "Sur R1, entrez en mode de configuration globale avec `configure terminal`, puis nommez-le `R1-KORA`.", checks: [0] },
+        {
+          title: "Configurer les interfaces du routeur",
+          body: "1. Sur `G0/0/0`, configurez `192.168.50.1 255.255.255.128` (LAN Opérations).\n2. Sur `G0/0/1`, configurez `192.168.50.129 255.255.255.192` (LAN Administration).\n3. Activez les deux interfaces avec `no shutdown`.",
+          checks: [1, 2, 3],
+        },
+        {
+          title: "Configurer les PC",
+          body: "Cliquez sur un PC, puis renseignez son adresse dans « Configuration IP » :\n• PC1 : `192.168.50.10` / `255.255.255.128`, passerelle `192.168.50.1`\n• PC3 : `192.168.50.140` / `255.255.255.192`, passerelle `192.168.50.129`",
+          checks: [4],
+        },
+        { title: "Vérifier la connectivité", body: "Depuis PC1, lancez `ping 192.168.50.140`. Les premiers paquets peuvent être perdus le temps de la résolution ARP.", checks: [5] },
+      ],
+      commands: [
+        { cmd: "enable", desc: "Passer en mode privilégié" },
+        { cmd: "configure terminal", desc: "Entrer en mode de configuration globale" },
+        { cmd: "hostname <nom>", desc: "Nommer l'équipement" },
+        { cmd: "interface <nom>", desc: "Entrer dans la configuration d'une interface" },
+        { cmd: "ip address <adresse> <masque>", desc: "Adresser une interface" },
+        { cmd: "no shutdown", desc: "Activer l'interface" },
+        { cmd: "show ip interface brief", desc: "Résumé des interfaces" },
+        { cmd: "ping <adresse>", desc: "Tester la connectivité" },
+      ],
       tips: `Les interfaces d'un routeur sont éteintes par défaut : pensez à « no shutdown ».
 « show ip interface brief » résume l'état des interfaces.
 Cliquez sur « Vérifier » à tout moment pour voir votre score.`,
@@ -57,7 +81,7 @@ function TpLoader() {
     getTp(id)
       .then((t) => {
         if (!t || !t.topology) return setError("Ce TP n'existe pas ou n'est pas encore publié.");
-        setTp({ id: t.id, title: t.title, statement: t.statement, checks: t.checks, initial: t.topology, brief: { image: t.image, context: t.context, objectives: t.objectives, addressing: t.addressing, tips: t.tips } });
+        setTp({ id: t.id, title: t.title, statement: t.statement, checks: t.checks, initial: t.topology, brief: { image: t.image, context: t.context, objectives: t.objectives, addressing: t.addressing, tips: t.tips, steps: t.steps, commands: t.commands } });
       })
       .catch(() => setError("Ce TP n'est pas disponible."));
   }, [id]);

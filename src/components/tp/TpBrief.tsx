@@ -2,7 +2,9 @@
 
 import {
   Cable,
+  Check,
   ChevronDown,
+  Terminal as TermIcon,
   Lightbulb,
   ListChecks,
   Maximize2,
@@ -13,7 +15,97 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { MODELS, Network, shortIf, type Device } from "@/engine/network";
-import type { AddrRow, TpBrief } from "@/lib/tps";
+import type { CheckResult } from "@/engine/checks";
+import type { AddrRow, TpBrief, TpStep } from "@/lib/tps";
+
+/** Texte de consigne : les `valeurs` entre accents graves sont surlignées et jamais traduites. */
+export function RichText({ text, className = "" }: { text: string; className?: string }) {
+  const parts = text.split(/(`[^`\n]+`)/g);
+  return (
+    <div className={`whitespace-pre-wrap text-sm leading-relaxed text-kora-200 ${className}`}>
+      {parts.map((p, i) =>
+        p.startsWith("`") && p.endsWith("`") && p.length > 2 ? (
+          <code key={i} translate="no" className="notranslate rounded bg-kora-500/20 px-1 py-0.5 font-mono text-[12px] text-kora-50 ring-1 ring-kora-300/30">
+            {p.slice(1, -1)}
+          </code>
+        ) : (
+          <span key={i}>{p}</span>
+        ),
+      )}
+    </div>
+  );
+}
+
+type StepState = "done" | "todo" | "failed";
+
+/** Étapes guidées : frise verticale, une étape dépliée à la fois, coche verte quand ses critères passent. */
+export function Stepper({ steps, results }: { steps: TpStep[]; results?: CheckResult[] | null }) {
+  const state = (s: TpStep): StepState => {
+    if (!results || !s.checks.length) return "todo";
+    const r = s.checks.map((i) => results[i]).filter(Boolean);
+    if (!r.length) return "todo";
+    return r.every((x) => x.ok) ? "done" : "failed";
+  };
+  const firstOpen = Math.max(0, steps.findIndex((s) => state(s) !== "done"));
+  const [open, setOpen] = useState<number | null>(firstOpen);
+  const doneCount = steps.filter((s) => state(s) === "done").length;
+  return (
+    <div>
+      <div className="mb-3 flex items-center gap-2">
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
+          <div className="h-full rounded-full bg-ok transition-all" style={{ width: `${(doneCount / steps.length) * 100}%` }} />
+        </div>
+        <span className="text-xs text-kora-200/70">
+          {doneCount}/{steps.length} étapes
+        </span>
+      </div>
+      <ol className="relative">
+        {steps.map((s, i) => {
+          const st = state(s);
+          const isOpen = open === i;
+          const fails = st === "failed" ? s.checks.map((k) => results?.[k]).filter((r): r is CheckResult => !!r && !r.ok) : [];
+          return (
+            <li key={i} className="relative pb-1 pl-9">
+              {i < steps.length - 1 && <span className={`absolute left-[13px] top-7 h-[calc(100%-1.25rem)] w-px ${st === "done" ? "bg-ok/50" : "bg-white/12"}`} />}
+              <span
+                className={`absolute left-0 top-1 grid h-7 w-7 place-items-center rounded-full text-xs font-semibold ring-2 transition ${
+                  st === "done" ? "bg-ok text-ink-950 ring-ok" : st === "failed" ? "bg-amber-400/15 text-amber-200 ring-amber-300/60" : isOpen ? "bg-kora-500 text-white ring-kora-300" : "bg-ink-900 text-kora-200 ring-white/15"
+                }`}
+              >
+                {st === "done" ? <Check size={15} strokeWidth={3} /> : i + 1}
+              </span>
+              <button onClick={() => setOpen(isOpen ? null : i)} className={`flex w-full items-start gap-2 py-1.5 text-left text-sm font-semibold ${isOpen ? "text-white" : st === "done" ? "text-kora-200/70" : "text-kora-100"} hover:text-white`}>
+                <span className="flex-1 leading-snug">{s.title || `Étape ${i + 1}`}</span>
+                <ChevronDown size={15} className={`mt-0.5 shrink-0 text-kora-200/50 transition ${isOpen ? "rotate-180" : ""}`} />
+              </button>
+              {isOpen && (
+                <div className="pb-3">
+                  <RichText text={s.body} />
+                  {fails.length > 0 && (
+                    <ul className="mt-2 space-y-1 rounded-lg bg-amber-400/10 p-2 text-xs ring-1 ring-amber-300/30">
+                      <li className="font-semibold text-amber-200">Il reste à faire :</li>
+                      {fails.map((f, k) => (
+                        <li key={k} className="text-kora-50">
+                          ✗ {f.label}
+                          {f.hint && <span className="block text-kora-200/70">{f.hint}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {i < steps.length - 1 && (
+                    <button onClick={() => setOpen(i + 1)} className="mt-2 text-xs font-semibold text-kora-300 hover:text-white">
+                      Étape suivante →
+                    </button>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
 
 /** Ports d'un équipement, avec le voisin de chaque port câblé. */
 export function portMap(net: Network, dev: Device) {
@@ -142,11 +234,15 @@ export function TpBriefView({
   brief,
   statement,
   initial,
+  results,
 }: {
   brief?: Partial<TpBrief>;
   statement: string;
   initial: string;
+  results?: CheckResult[] | null;
 }) {
+  const steps = brief?.steps ?? [];
+  const commands = brief?.commands ?? [];
   const [zoom, setZoom] = useState(false);
   const net = useMemo(() => {
     try {
@@ -211,7 +307,7 @@ export function TpBriefView({
         </Section>
       )}
       {objectives.length > 0 && (
-        <Section icon={ListChecks} title="Objectifs">
+        <Section icon={ListChecks} title="Objectifs" open={!steps.length}>
           <ol className="space-y-1.5 text-sm text-kora-100">
             {objectives.map((o, i) => (
               <li key={i} className="flex gap-2">
@@ -222,6 +318,11 @@ export function TpBriefView({
               </li>
             ))}
           </ol>
+        </Section>
+      )}
+      {steps.length > 0 && (
+        <Section icon={ListChecks} title="Étapes">
+          <Stepper steps={steps} results={results} />
         </Section>
       )}
       {!!brief?.addressing?.length && (
@@ -251,10 +352,22 @@ export function TpBriefView({
       {statement && (
         <Section
           icon={ListChecks}
-          title={brief?.context || objectives.length ? "Consignes" : "Énoncé"}
+          title={brief?.context || objectives.length || steps.length ? "Consignes" : "Énoncé"}
         >
           <div className="whitespace-pre-wrap text-sm leading-relaxed text-kora-200">
             {statement}
+          </div>
+        </Section>
+      )}
+      {commands.length > 0 && (
+        <Section icon={TermIcon} title={`Commandes utiles (${commands.length})`} open={false}>
+          <div className="space-y-1.5" translate="no">
+            {commands.map((c, i) => (
+              <div key={i} className="notranslate rounded-lg bg-ink-950/60 px-2.5 py-1.5 ring-1 ring-white/8">
+                <code className="block font-mono text-[12px] text-kora-50">{c.cmd}</code>
+                {c.desc && <span className="text-[11px] text-kora-200/70" translate="yes">{c.desc}</span>}
+              </div>
+            ))}
           </div>
         </Section>
       )}
@@ -267,7 +380,7 @@ export function TpBriefView({
           </ul>
         </Section>
       )}
-      {!statement && !brief?.context && !objectives.length && (
+      {!statement && !brief?.context && !objectives.length && !steps.length && (
         <p className="text-sm text-kora-200/60">Aucun énoncé.</p>
       )}
     </div>

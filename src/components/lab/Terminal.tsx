@@ -59,9 +59,10 @@ export function Terminal({
 
   return (
     <div
+      translate="no"
       ref={box}
       onClick={() => window.getSelection()?.toString() || field.current?.focus()}
-      className="term h-full overflow-y-auto bg-[#0a0a0b] px-4 py-3 text-[#e5e5ea]"
+      className="term notranslate h-full overflow-y-auto bg-[#0a0a0b] px-4 py-3 text-[#e5e5ea]"
     >
       {lines.map((l, i) => (
         <div key={i}>{l}</div>

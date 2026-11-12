@@ -21,8 +21,13 @@ export const LEVELS = ["CCNA 1", "CCNA 2", "CCNA 3", "Autre"] as const;
 /** Ligne de la table d'adressage d'un TP. */
 export type AddrRow = { device: string; iface: string; ip: string; mask: string; gw: string };
 
-/** Énoncé structuré : photo de la topologie, contexte, objectifs, adressage, astuces. */
-export type TpBrief = { image: string; context: string; objectives: string; addressing: AddrRow[]; tips: string };
+/** Étape guidée : consignes (les `valeurs` entre accents graves sont surlignées) et critères qui la valident. */
+export type TpStep = { title: string; body: string; checks: number[] };
+/** Commande du résumé affiché à l'étudiant. */
+export type TpCommand = { cmd: string; desc: string };
+
+/** Énoncé structuré : photo de la topologie, contexte, objectifs, étapes, adressage, commandes, astuces. */
+export type TpBrief = { image: string; context: string; objectives: string; addressing: AddrRow[]; tips: string; steps: TpStep[]; commands: TpCommand[] };
 
 export type Tp = TpBrief & {
   id: string;
@@ -52,6 +57,8 @@ function toTp(id: string, d: Record<string, unknown>): Tp {
     objectives: (d.objectives as string) ?? "",
     addressing: (d.addressing as AddrRow[]) ?? [],
     tips: (d.tips as string) ?? "",
+    steps: (d.steps as TpStep[]) ?? [],
+    commands: (d.commands as TpCommand[]) ?? [],
     topology: (d.topology as string) ?? "",
     checks: (d.checks as Check[]) ?? [],
     published: !!d.published,
