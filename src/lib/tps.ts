@@ -18,7 +18,13 @@ import { db } from "./firebase";
 
 export const LEVELS = ["CCNA 1", "CCNA 2", "CCNA 3", "Autre"] as const;
 
-export type Tp = {
+/** Ligne de la table d'adressage d'un TP. */
+export type AddrRow = { device: string; iface: string; ip: string; mask: string; gw: string };
+
+/** Énoncé structuré : photo de la topologie, contexte, objectifs, adressage, astuces. */
+export type TpBrief = { image: string; context: string; objectives: string; addressing: AddrRow[]; tips: string };
+
+export type Tp = TpBrief & {
   id: string;
   title: string;
   level: string;
@@ -41,6 +47,11 @@ function toTp(id: string, d: Record<string, unknown>): Tp {
     level: (d.level as string) ?? "Autre",
     summary: (d.summary as string) ?? "",
     statement: (d.statement as string) ?? "",
+    image: (d.image as string) ?? "",
+    context: (d.context as string) ?? "",
+    objectives: (d.objectives as string) ?? "",
+    addressing: (d.addressing as AddrRow[]) ?? [],
+    tips: (d.tips as string) ?? "",
     topology: (d.topology as string) ?? "",
     checks: (d.checks as Check[]) ?? [],
     published: !!d.published,

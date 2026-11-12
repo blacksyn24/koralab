@@ -23,6 +23,8 @@ import { isIp, isMask } from "@/engine/ip";
 import { Network, isWireless, shortIf, type Device, type DeviceKind } from "@/engine/network";
 import { evaluate, type Check, type CheckResult } from "@/engine/checks";
 import { createLab } from "@/lib/labs";
+import type { TpBrief } from "@/lib/tps";
+import { TpBriefView } from "@/components/tp/TpBrief";
 import { AccountMenu } from "../auth/AccountMenu";
 import { useAuth } from "../auth/AuthProvider";
 import { DeviceNode, type DeviceNodeData } from "./DeviceNode";
@@ -80,6 +82,8 @@ export type TpMode = {
   remote?: (json: string) => Promise<{ passed: boolean[]; message: string }>;
   /** Lien de retour (page du hackathon) */
   backHref?: string;
+  /** Énoncé structuré : photo, contexte, objectifs, adressage, astuces */
+  brief?: Partial<TpBrief>;
 };
 
 export function Lab({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
@@ -687,7 +691,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
 
         {/* Mode TP : énoncé et résultats de la vérification */}
         {tp && tpPanel && (
-          <aside className="flex w-[22rem] shrink-0 flex-col border-l border-white/8 bg-ink-900/80">
+          <aside className="flex w-[24rem] shrink-0 flex-col border-l border-white/8 bg-ink-900/80">
             <div className="flex items-center justify-between border-b border-white/8 px-4 py-2.5">
               <p className="font-semibold text-white">Énoncé</p>
               <button onClick={() => setTpPanel(false)} aria-label="Masquer l'énoncé" className="text-kora-200/70 hover:text-white">
@@ -715,7 +719,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
                   </ul>
                 </div>
               )}
-              <div className="whitespace-pre-wrap text-sm leading-relaxed text-kora-200">{tp.statement || "Aucun énoncé."}</div>
+              <TpBriefView brief={tp.brief} statement={tp.statement} initial={tp.initial} />
             </div>
             <div className="border-t border-white/8 p-3">
               <button onClick={check} disabled={checking} className="flex w-full items-center justify-center gap-2 rounded-xl bg-ok/90 py-2 font-semibold text-ink-950 hover:bg-ok disabled:opacity-60">

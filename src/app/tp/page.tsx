@@ -25,22 +25,23 @@ function demoTp(): Omit<TpMode, "onResult"> {
     title: "Démo — Kora Logistique : mise en service",
     checks,
     initial: JSON.stringify(net.toJSON()),
-    statement: `Contexte
-Kora Logistique (entreprise fictive, Cotonou) emménage dans un nouveau bâtiment. Mettez le réseau en service.
-
-Objectifs
-1. Nommez le routeur R1-KORA.
-2. Configurez et activez les interfaces du routeur :
-   • G0/0/0 : 192.168.50.1 / 255.255.255.128 (LAN Opérations)
-   • G0/0/1 : 192.168.50.129 / 255.255.255.192 (LAN Administration)
-3. Configurez PC1 : 192.168.50.10 / 255.255.255.128, passerelle 192.168.50.1
-4. Configurez PC3 : 192.168.50.140 / 255.255.255.192, passerelle 192.168.50.129
-5. Vérifiez que PC1 réussit à pinguer PC3.
-
-Astuces
-• Les interfaces d'un routeur sont éteintes par défaut : pensez à « no shutdown ».
-• « show ip interface brief » résume l'état des interfaces.
-• Cliquez sur « Vérifier » à tout moment pour voir votre score.`,
+    statement: "",
+    brief: {
+      context: "Kora Logistique (entreprise fictive, Cotonou) emménage dans un nouveau bâtiment. Mettez le réseau en service.",
+      objectives: `Nommez le routeur R1-KORA.
+Configurez et activez G0/0/0 (LAN Opérations) et G0/0/1 (LAN Administration).
+Configurez PC1 et PC3 selon la table d'adressage.
+Vérifiez que PC1 réussit à pinguer PC3.`,
+      addressing: [
+        { device: "R1-KORA", iface: "G0/0/0", ip: "192.168.50.1", mask: "255.255.255.128", gw: "" },
+        { device: "R1-KORA", iface: "G0/0/1", ip: "192.168.50.129", mask: "255.255.255.192", gw: "" },
+        { device: "PC1", iface: "NIC", ip: "192.168.50.10", mask: "255.255.255.128", gw: "192.168.50.1" },
+        { device: "PC3", iface: "NIC", ip: "192.168.50.140", mask: "255.255.255.192", gw: "192.168.50.129" },
+      ],
+      tips: `Les interfaces d'un routeur sont éteintes par défaut : pensez à « no shutdown ».
+« show ip interface brief » résume l'état des interfaces.
+Cliquez sur « Vérifier » à tout moment pour voir votre score.`,
+    },
   };
 }
 
@@ -56,7 +57,7 @@ function TpLoader() {
     getTp(id)
       .then((t) => {
         if (!t || !t.topology) return setError("Ce TP n'existe pas ou n'est pas encore publié.");
-        setTp({ id: t.id, title: t.title, statement: t.statement, checks: t.checks, initial: t.topology });
+        setTp({ id: t.id, title: t.title, statement: t.statement, checks: t.checks, initial: t.topology, brief: { image: t.image, context: t.context, objectives: t.objectives, addressing: t.addressing, tips: t.tips } });
       })
       .catch(() => setError("Ce TP n'est pas disponible."));
   }, [id]);
