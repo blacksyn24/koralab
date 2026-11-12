@@ -1,7 +1,7 @@
 "use client";
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { Laptop, Layers, Monitor, Network as SwitchIcon, Router, Server, Smartphone, Wifi } from "lucide-react";
+import { Database, Laptop, Layers, Monitor, Network as SwitchIcon, Router, Server, Smartphone, Wifi } from "lucide-react";
 import type { DeviceKind } from "@/engine/network";
 
 export type DeviceNodeData = { kind: DeviceKind; hostname: string; model: string; picked: boolean; cableMode: boolean };
@@ -19,11 +19,11 @@ const COLORS = {
 /** Un équipement sur le canevas : icône, nom et modèle. */
 export function DeviceNode({ data, selected }: NodeProps) {
   const d = data as DeviceNodeData;
-  const Icon = d.model === "LAPTOP" ? Laptop : d.model === "PHONE" ? Smartphone : ICONS[d.kind];
+  const Icon = d.model === "LAPTOP" ? Laptop : d.model === "PHONE" ? Smartphone : d.model === "SERVER" ? Database : ICONS[d.kind];
   return (
     <div className={`flex w-28 flex-col items-center gap-1.5 ${d.cableMode ? "cursor-crosshair" : "cursor-grab"}`}>
       <div
-        className={`relative grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br ${COLORS[d.kind]} shadow-lg shadow-black/40 ring-2 transition ${
+        className={`relative grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br ${d.model === "SERVER" ? "from-amber-400 to-orange-600" : COLORS[d.kind]} shadow-lg shadow-black/40 ring-2 transition ${
           d.picked ? "ring-amber-300 ring-offset-2 ring-offset-ink-950" : selected ? "ring-white" : "ring-white/10"
         }`}
       >

@@ -13,7 +13,7 @@ import {
   type Node,
   type NodeChange,
 } from "@xyflow/react";
-import { BookOpen, Boxes, Cable, CheckCircle2, CircleHelp, Cloud, CloudCheck, CloudOff, Download, FilePlus2, FlaskConical, Globe, Laptop, Layers, Loader2, Lock, Monitor, MousePointer2, Network as SwitchIcon, RotateCcw, Router, Server, Smartphone, SquareTerminal, Trash2, Upload, Wifi, X, XCircle } from "lucide-react";
+import { BookOpen, Boxes, Cable, CheckCircle2, CircleHelp, Cloud, CloudCheck, CloudOff, Database, Download, FilePlus2, FlaskConical, Globe, Laptop, Layers, Loader2, Lock, Monitor, MousePointer2, Network as SwitchIcon, RotateCcw, Router, Server, Smartphone, SquareTerminal, Trash2, Upload, Wifi, X, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -28,7 +28,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { DeviceNode, type DeviceNodeData } from "./DeviceNode";
 import { LinkEdge, type LinkEdgeData } from "./LinkEdge";
 import { Terminal, type Shell } from "./Terminal";
-import { ApPanel, Browser, ClientWifiPanel, WifiEdge, WlcPanel } from "./Wifi";
+import { ApPanel, Browser, ClientWifiPanel, ServerPanel, WifiEdge, WlcPanel } from "./Wifi";
 
 import { KoraLogo } from "@/components/Logo";
 import { askConfirm, askText } from "@/components/Dialog";
@@ -131,7 +131,7 @@ const LIBRARY: { vendor: string; color: string; items: { kind: DeviceKind; model
     color: "text-emerald-300",
     items: [
       { kind: "pc", model: "PC", label: "PC", detail: "1 carte réseau", icon: Monitor },
-      { kind: "pc", label: "Serveur", icon: Server, soon: true },
+      { kind: "pc", model: "SERVER", label: "Serveur", detail: "RADIUS, web", icon: Database },
     ],
   },
 ];
@@ -642,6 +642,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
                       <div className="w-60 shrink-0 space-y-4 overflow-y-auto border-r border-white/8 bg-ink-900/60 p-3">
                         {isWireless(activeDev) && <ClientWifiPanel dev={activeDev} net={net} onChange={bump} />}
                         <PcConfig dev={activeDev} net={net} onChange={bump} />
+                        {activeDev.radius && <ServerPanel dev={activeDev} net={net} onChange={bump} />}
                       </div>
                     )}
                     <div className="flex min-w-0 flex-1 flex-col">
@@ -838,6 +839,7 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
     ["Contrôleur → adresse de gestion, puis PC → Navigateur → https://IP", "Interface web : réseaux, VLAN, sécurité, clients"],
     ["Point d'accès : DHCP + option 43 hex f104… (ou même réseau)", "Enregistrement auprès du contrôleur"],
     ["Portable / Téléphone : choisir le réseau, mot de passe, se connecter", "Placez-le près d'un point d'accès"],
+    ["Serveur → Service RADIUS ; contrôleur → Sécurité (RADIUS)", "Wi-Fi Entreprise : clients NAS, secret partagé, comptes"],
     ["— Routage —", ""],
     ["interface g0/0/0.10 · encapsulation dot1Q 10", "Router-on-a-stick"],
     ["ip routing · interface vlan 10 · no switchport", "Switch de couche 3"],

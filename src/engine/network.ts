@@ -86,7 +86,9 @@ export type DhcpPool = { name: string; network?: string; mask?: string; router?:
 
 // ---------- Wi-Fi ----------
 export type WifiSecurity = "open" | "wpa2-psk" | "wpa3-psk" | "wpa2-ent" | "wpa3-ent";
-export type Wlan = { id: number; profile: string; ssid: string; enabled: boolean; iface: string; security: WifiSecurity; psk?: string };
+export type Wlan = { id: number; profile: string; ssid: string; enabled: boolean; iface: string; security: WifiSecurity; psk?: string; aaa?: "local" | "radius" };
+/** Service RADIUS d'un serveur : contrôleurs autorisés (clients NAS) et comptes. */
+export type RadiusService = { enabled: boolean; clients: { name: string; ip: string; secret: string }[]; users: { user: string; pass: string }[] };
 export type WlcIface = { name: string; vlan: number; ip?: string; mask?: string; gw?: string };
 export type WlcConfig = {
   admin: { user: string; pass: string };
@@ -143,6 +145,7 @@ export type Device = {
   wifi?: { ssid?: string; psk?: string; user?: string; pass?: string };
   apCfg?: { dhcp: boolean; controller?: string; learned?: string; gateway?: string };
   wlcCfg?: WlcConfig;
+  radius?: RadiusService;
   /** DHCP snooping et inspection ARP dynamique */
   snooping?: { enabled: boolean; vlans: number[] };
   dai?: { vlans: number[] };
@@ -249,6 +252,7 @@ export const MODELS: Record<string, ModelSpec> = {
   },
   PC: { kind: "pc", label: "PC", ports: ["FastEthernet0"], description: "Ordinateur · 1 carte réseau" },
   LAPTOP: { kind: "pc", label: "Portable Wi-Fi", ports: ["Wireless0"], description: "Ordinateur portable · carte Wi-Fi" },
+  SERVER: { kind: "pc", label: "Serveur", ports: ["GigabitEthernet0"], description: "Serveur · RADIUS, web" },
   PHONE: { kind: "pc", label: "Téléphone", ports: ["Wireless0"], description: "Smartphone · Wi-Fi" },
   "KA-1800": { kind: "ap", label: "Point d'accès KA-1800", ports: ["GigabitEthernet0"], description: "Point d'accès léger (géré par un contrôleur)" },
   "KW-3500": { kind: "wlc", label: "Contrôleur Wi-Fi KW-3500", ports: ["GigabitEthernet0/0/1", "GigabitEthernet0/0/2"], description: "Contrôleur Wi-Fi · configuration par interface web" },
@@ -382,7 +386,7 @@ export class Network {
 
   addDevice(kind: DeviceKind, x = 0, y = 0, model?: string): Device {
     const spec = MODELS[model ?? ""]?.kind === kind ? MODELS[model!] : MODELS[DEFAULT_MODEL[kind]];
-    const prefix = model === "LAPTOP" ? "Laptop" : model === "PHONE" ? "Phone" : PREFIX[kind];
+    const prefix = model === "LAPTOP" ? "Laptop" : model === "PHONE" ? "Phone" : model === "SERVER" ? "Server" : PREFIX[kind];
     let n = 1;
     while (this.devices.some((d) => d.hostname === `${prefix}${n}`)) n++;
     const dev: Device = {
@@ -403,6 +407,7 @@ export class Network {
     }
     if (kind === "router" || kind === "wlc") dev.subifs = [];
     if (kind === "ap") dev.apCfg = { dhcp: true };
+    if (model === "SERVER") dev.radius = { enabled: false, clients: [], users: [] };
     if (kind === "wlc") dev.wlcCfg = { admin: { user: "admin", pass: "admin" }, mgmt: { name: "management", vlan: 0 }, ifaces: [], wlans: [], radius: [], users: [] };
     this.devices.push(dev);
     return dev;
@@ -1962,7 +1967,7 @@ export class Network {
 
   // ---------- Wi-Fi : contrôleur, points d'accès, clients ----------
 
-  private wifiCache: { joined: Map<string, { wlc: Device | null; reason: string }>; assoc: Map<string, WifiAssoc | { error: string }> } | null = null;
+  private wifiCache: { joined: Map<string, { wlc: Device | null; reason: string }>; assoc: Map<string, WifiAssoc | { error: string }>; radiusLog: Map<string, string[]> } | null = null;
   private wifiBusy = false;
 
   /** Recrée les interfaces logiques du contrôleur (management + dynamiques) sur son port de distribution. */
@@ -1986,11 +1991,13 @@ export class Network {
   ensureWifi() {
     if (this.wifiCache || this.wifiBusy) return;
     if (!this.devices.some((d) => d.kind === "ap" || d.kind === "wlc")) {
-      this.wifiCache = { joined: new Map(), assoc: new Map() };
+      this.wifiCache = { joined: new Map(), assoc: new Map(), radiusLog: new Map() };
       return;
     }
     this.wifiBusy = true;
     const joined = new Map<string, { wlc: Device | null; reason: string }>();
+    const assoc = new Map<string, WifiAssoc | { error: string }>();
+    const radiusLog = new Map<string, string[]>();
     try {
       const wlcs = this.devices.filter((d) => d.kind === "wlc" && d.wlcCfg?.mgmt.ip);
       for (const ap of this.devices.filter((d) => d.kind === "ap")) {
@@ -2017,14 +2024,13 @@ export class Network {
         const ok = this.ping(ap, wlc.wlcCfg!.mgmt.ip!, 3).some((r) => r.ok);
         joined.set(ap.id, ok ? { wlc, reason: "" } : { wlc: null, reason: `Le contrôleur ${wlc.wlcCfg!.mgmt.ip} est injoignable depuis le point d'accès (VLAN, trunk ou routage).` });
       }
+      for (const c of this.devices.filter((d) => isWireless(d) && d.wifi?.ssid)) {
+        assoc.set(c.id, this.associate(c, joined, radiusLog));
+      }
     } finally {
       this.wifiBusy = false;
     }
-    const assoc = new Map<string, WifiAssoc | { error: string }>();
-    for (const c of this.devices.filter((d) => isWireless(d) && d.wifi?.ssid)) {
-      assoc.set(c.id, this.associate(c, joined));
-    }
-    this.wifiCache = { joined, assoc };
+    this.wifiCache = { joined, assoc, radiusLog };
   }
 
   /** Réseaux Wi-Fi visibles par un client (points d'accès enregistrés à portée). */
@@ -2042,7 +2048,7 @@ export class Network {
     return this.devices.filter((d) => d.kind === "ap" && Math.hypot(d.x - client.x, d.y - client.y) <= WIFI_RANGE).sort((a, b) => Math.hypot(a.x - client.x, a.y - client.y) - Math.hypot(b.x - client.x, b.y - client.y));
   }
 
-  private associate(c: Device, joined: Map<string, { wlc: Device | null; reason: string }>): WifiAssoc | { error: string } {
+  private associate(c: Device, joined: Map<string, { wlc: Device | null; reason: string }>, radiusLog: Map<string, string[]>): WifiAssoc | { error: string } {
     const want = c.wifi!;
     const inRange = this.apsInRange(c);
     if (!inRange.length) return { error: "Aucun point d'accès à portée : rapprochez l'appareil d'un point d'accès sur le canevas." };
@@ -2055,14 +2061,60 @@ export class Network {
       if (!wlan.enabled) return { error: `Le réseau « ${want.ssid} » est désactivé sur le contrôleur.` };
       if ((wlan.security === "wpa2-psk" || wlan.security === "wpa3-psk") && want.psk !== wlan.psk) return { error: "Mot de passe Wi-Fi incorrect (échec de l'authentification WPA)." };
       if (wlan.security === "wpa2-ent" || wlan.security === "wpa3-ent") {
-        const ok = wlc.wlcCfg!.users.some((u) => u.user === want.user && u.pass === want.pass);
-        if (!ok) return { error: "Identifiant ou mot de passe refusé (authentification 802.1X)." };
+        if (!want.user) return { error: "Ce réseau demande un identifiant et un mot de passe (802.1X)." };
+        if (wlan.aaa === "radius") {
+          const res = this.radiusAuth(wlc, want.user, want.pass ?? "", c, radiusLog);
+          if (res) return { error: res };
+        } else {
+          const ok = wlc.wlcCfg!.users.some((u) => u.user === want.user && u.pass === want.pass);
+          if (!ok) return { error: "Identifiant ou mot de passe refusé (authentification 802.1X)." };
+        }
       }
       const iface = wlan.iface === "management" ? wlc.wlcCfg!.mgmt : wlc.wlcCfg!.ifaces.find((i) => i.name === wlan.iface);
       if (!iface) return { error: `Le réseau « ${want.ssid} » n'est relié à aucune interface du contrôleur.` };
       return { ap, wlc, wlan, vlan: iface.vlan };
     }
     return { error: `Le réseau « ${want.ssid} » n'existe pas (aucun point d'accès ne le diffuse).` };
+  }
+
+  /** Authentification 802.1X relayée par le contrôleur vers ses serveurs RADIUS (dans l'ordre). Renvoie l'erreur, ou null si acceptée. */
+  private radiusAuth(wlc: Device, user: string, pass: string, client: Device, log: Map<string, string[]>): string | null {
+    const servers = wlc.wlcCfg!.radius;
+    if (!servers.length) return "Aucun serveur RADIUS n'est configuré sur le contrôleur.";
+    const nas = wlc.wlcCfg!.mgmt.ip;
+    let last = "";
+    for (const r of servers) {
+      const srv = this.devices.find((d) => d.radius && this.l3Ifaces(d).some((i) => i.ip === r.ip));
+      const reach = this.ping(wlc, r.ip, 2).some((x) => x.ok);
+      if (!reach || !srv) {
+        last = `Le serveur RADIUS ${r.ip} ne répond pas (adresse, routage ou VLAN).`;
+        continue;
+      }
+      const note = (t: string) => log.set(srv.id, [...(log.get(srv.id) ?? []), t]);
+      if (!srv.radius!.enabled) {
+        last = `Le serveur ${r.ip} est joignable mais le service RADIUS n'y est pas démarré.`;
+        continue;
+      }
+      const nasEntry = srv.radius!.clients.find((n) => n.ip === nas);
+      if (!nasEntry) {
+        note(`Requête ignorée : client NAS inconnu ${nas} (${wlc.hostname})`);
+        return `Le serveur RADIUS ignore le contrôleur : l'adresse ${nas} n'est pas déclarée comme client.`;
+      }
+      if (nasEntry.secret !== r.secret) {
+        note(`Requête ignorée : secret partagé incorrect pour ${nas}`);
+        return "Le serveur RADIUS ignore la requête : le secret partagé ne correspond pas.";
+      }
+      const ok = srv.radius!.users.some((u) => u.user === user && u.pass === pass);
+      note(`${ok ? "Access-Accept" : "Access-Reject"} · ${user} · ${client.hostname} via ${wlc.hostname}`);
+      return ok ? null : "Identifiant ou mot de passe refusé par le serveur RADIUS (Access-Reject).";
+    }
+    return last;
+  }
+
+  /** Journal RADIUS d'un serveur (dernières authentifications). */
+  radiusLogOf(server: Device): string[] {
+    this.ensureWifi();
+    return this.wifiCache?.radiusLog.get(server.id) ?? [];
   }
 
   /** Association Wi-Fi d'un client (null si non connecté). */

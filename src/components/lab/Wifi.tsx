@@ -1,7 +1,7 @@
 "use client";
 
 import { BaseEdge, getStraightPath, type EdgeProps } from "@xyflow/react";
-import { ArrowLeft, ArrowRight, Globe, Lock, LogOut, Plus, RefreshCw, RotateCw, Trash2, Wifi, WifiOff } from "lucide-react";
+import { ArrowLeft, ArrowRight, Globe, KeyRound, Lock, LogOut, Plus, RefreshCw, RotateCw, Trash2, Wifi, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isIp, isMask } from "@/engine/ip";
 import type { Device, Network, Wlan, WlcIface, WifiSecurity } from "@/engine/network";
@@ -343,11 +343,12 @@ export function Browser({ dev, net, onChange }: { dev: Device; net: Network; onC
 
 // ---------- Interface web du contrôleur ----------
 
-type Tab = "dash" | "wlan" | "ifaces" | "aps" | "clients" | "admin";
+type Tab = "dash" | "wlan" | "ifaces" | "aaa" | "aps" | "clients" | "admin";
 const TABS: [Tab, string][] = [
   ["dash", "Tableau de bord"],
   ["wlan", "Réseaux Wi-Fi"],
   ["ifaces", "Interfaces"],
+  ["aaa", "Sécurité (RADIUS)"],
   ["aps", "Points d'accès"],
   ["clients", "Clients"],
   ["admin", "Administration"],
@@ -490,6 +491,7 @@ export function WlcWebGui({ wlc, net, onChange }: { wlc: Device; net: Network; o
           </div>
         )}
         {tab === "admin" && <AdminTab wlc={wlc} save={save} />}
+        {tab === "aaa" && <AaaTab wlc={wlc} save={save} />}
       </main>
     </div>
   );
@@ -508,7 +510,7 @@ function WlanTab({ wlc, save }: { wlc: Device; save: (fn: () => void) => void })
     if (c.wlans.some((w) => w.id !== edit.id && w.ssid === edit.ssid)) return setErr("Ce SSID existe déjà.");
     if (isPsk(edit.security) && (edit.psk ?? "").length < 8) return setErr("La clé WPA doit contenir au moins 8 caractères.");
     save(() => {
-      const w = { ...edit, profile: edit.profile.trim() || edit.ssid, psk: isPsk(edit.security) ? edit.psk : undefined };
+      const w = { ...edit, profile: edit.profile.trim() || edit.ssid, psk: isPsk(edit.security) ? edit.psk : undefined, aaa: isEnt(edit.security) ? (edit.aaa ?? "local") : undefined };
       c.wlans = c.wlans.some((x) => x.id === w.id) ? c.wlans.map((x) => (x.id === w.id ? w : x)) : [...c.wlans, w];
     });
     setEdit(null);
@@ -543,7 +545,20 @@ function WlanTab({ wlc, save }: { wlc: Device; save: (fn: () => void) => void })
           </select>
         </label>
         {isPsk(edit.security) && <GField label="Clé pré-partagée (8 caractères min.)" type="password" value={edit.psk ?? ""} onChange={(v) => setEdit({ ...edit, psk: v })} />}
-        {isEnt(edit.security) && <p className="rounded-md bg-violet-50 p-2.5 text-xs text-violet-800">Les comptes 802.1X se créent dans « Administration » (base locale du contrôleur).</p>}
+        {isEnt(edit.security) && (
+          <>
+            <label className="block text-xs font-medium text-slate-600">
+              Authentification 802.1X
+              <select value={edit.aaa ?? "local"} onChange={(e) => setEdit({ ...edit, aaa: e.target.value as "local" | "radius" })} className={gInput}>
+                <option value="local">Base locale du contrôleur</option>
+                <option value="radius">Serveurs RADIUS</option>
+              </select>
+            </label>
+            <p className="rounded-md bg-violet-50 p-2.5 text-xs text-violet-800">
+              {edit.aaa === "radius" ? "Déclarez les serveurs dans « Sécurité (RADIUS) », puis le contrôleur comme client sur le serveur." : "Les comptes se créent dans « Administration »."}
+            </p>
+          </>
+        )}
         <label className="flex items-center gap-2 text-sm text-slate-700">
           <input type="checkbox" checked={edit.enabled} onChange={(e) => setEdit({ ...edit, enabled: e.target.checked })} /> Réseau activé
         </label>
@@ -574,7 +589,7 @@ function WlanTab({ wlc, save }: { wlc: Device; save: (fn: () => void) => void })
           w.profile,
           w.ssid,
           w.iface,
-          SECURITY_LABEL[w.security],
+          SECURITY_LABEL[w.security] + (isEnt(w.security) ? (w.aaa === "radius" ? " · RADIUS" : " · locale") : ""),
           <span key="s" className={w.enabled ? "text-emerald-600" : "text-slate-400"}>{w.enabled ? "Activé" : "Désactivé"}</span>,
           <span key="a" className="flex gap-2">
             <button onClick={() => setEdit({ ...w })} className="text-violet-700 hover:underline">
@@ -702,6 +717,148 @@ function AdminTab({ wlc, save }: { wlc: Device; save: (fn: () => void) => void }
         </button>
       </div>
       {msg && <p className="text-sm text-slate-600">{msg}</p>}
+    </div>
+  );
+}
+
+function AaaTab({ wlc, save }: { wlc: Device; save: (fn: () => void) => void }) {
+  const c = wlc.wlcCfg!;
+  const [f, setF] = useState({ ip: "", secret: "" });
+  const [err, setErr] = useState("");
+  return (
+    <div className="max-w-xl space-y-4">
+      <h2 className="text-lg font-bold">Serveurs d&apos;authentification RADIUS</h2>
+      <Table
+        head={["Priorité", "Adresse du serveur", "Port", "Secret partagé", ""]}
+        rows={c.radius.map((r, i) => [
+          i + 1,
+          r.ip,
+          1812,
+          "••••••",
+          <button key="d" onClick={() => save(() => (c.radius = c.radius.filter((x) => x !== r)))} aria-label="Supprimer" className="text-slate-400 hover:text-rose-600">
+            <Trash2 size={14} />
+          </button>,
+        ])}
+        empty="Aucun serveur RADIUS."
+      />
+      <div className="rounded-xl bg-white p-4 shadow-sm">
+        <p className="mb-2 text-sm font-semibold">Ajouter un serveur</p>
+        <div className="grid grid-cols-2 gap-2">
+          <GField label="Adresse IP du serveur" value={f.ip} onChange={(v) => setF({ ...f, ip: v.trim() })} ph="192.168.1.50" />
+          <GField label="Secret partagé" type="password" value={f.secret} onChange={(v) => setF({ ...f, secret: v })} />
+        </div>
+        {err && <p className="mt-2 text-sm text-rose-600">{err}</p>}
+        <button
+          onClick={() => {
+            if (!isIp(f.ip) || c.radius.some((r) => r.ip === f.ip)) return setErr("Adresse invalide ou déjà déclarée.");
+            if (f.secret.length < 4) return setErr("Secret partagé : 4 caractères minimum.");
+            save(() => (c.radius = [...c.radius, f]));
+            setF({ ip: "", secret: "" });
+            setErr("");
+          }}
+          className={`${gBtn} mt-3`}
+        >
+          Ajouter
+        </button>
+        <p className="mt-2 text-xs text-slate-500">
+          Le contrôleur interroge les serveurs dans l&apos;ordre, depuis son adresse de gestion ({c.mgmt.ip ?? "non configurée"}). Sur le serveur, déclarez cette adresse comme client avec le même secret.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** Services d'un serveur : RADIUS (clients NAS, comptes, journal). */
+export function ServerPanel({ dev, net, onChange }: { dev: Device; net: Network; onChange: () => void }) {
+  const r = (dev.radius ??= { enabled: false, clients: [], users: [] });
+  const [nas, setNas] = useState({ name: "", ip: "", secret: "" });
+  const [u, setU] = useState({ user: "", pass: "" });
+  const [msg, setMsg] = useState("");
+  const commit = (fn: () => void, m: string) => {
+    fn();
+    net.clearDynamic();
+    setMsg(m);
+    onChange();
+  };
+  const log = net.radiusLogOf(dev);
+  const small = "rounded-md px-2 py-1 text-xs";
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="flex items-center gap-1.5 text-sm font-semibold text-white">
+          <KeyRound size={15} /> Service RADIUS
+        </p>
+        <button
+          onClick={() => commit(() => (r.enabled = !r.enabled), r.enabled ? "Service arrêté." : "Service démarré ✓")}
+          className={`${small} font-semibold ring-1 ${r.enabled ? "bg-ok/15 text-ok ring-ok/40" : "text-kora-200 ring-white/15"}`}
+        >
+          {r.enabled ? "Activé" : "Désactivé"}
+        </button>
+      </div>
+      <div>
+        <p className="mb-1 text-xs font-semibold text-kora-100">Clients (contrôleurs autorisés)</p>
+        {r.clients.map((n) => (
+          <div key={n.ip} className="flex items-center justify-between rounded-md bg-ink-800 px-2 py-1 font-mono text-[11px] text-kora-100">
+            {n.name || "NAS"} · {n.ip}
+            <button onClick={() => commit(() => (r.clients = r.clients.filter((x) => x !== n)), "Client supprimé.")} aria-label="Supprimer" className="text-kora-200/60 hover:text-ko">
+              <Trash2 size={12} />
+            </button>
+          </div>
+        ))}
+        <div className="mt-1 space-y-1.5">
+          <Field label="Nom" value={nas.name} onChange={(v) => setNas({ ...nas, name: v.trim() })} ph="WLC1" />
+          <Field label="Adresse IP du contrôleur" value={nas.ip} onChange={(v) => setNas({ ...nas, ip: v.trim() })} ph="192.168.1.5" />
+          <Field label="Secret partagé" type="password" value={nas.secret} onChange={(v) => setNas({ ...nas, secret: v })} />
+          <button
+            className={btnGhost}
+            onClick={() => {
+              if (!isIp(nas.ip) || nas.secret.length < 4 || r.clients.some((x) => x.ip === nas.ip)) return setMsg("Adresse invalide/déjà déclarée ou secret trop court.");
+              commit(() => (r.clients = [...r.clients, nas]), "Client ajouté ✓");
+              setNas({ name: "", ip: "", secret: "" });
+            }}
+          >
+            Ajouter le client
+          </button>
+        </div>
+      </div>
+      <div>
+        <p className="mb-1 text-xs font-semibold text-kora-100">Comptes utilisateurs</p>
+        {r.users.map((x) => (
+          <div key={x.user} className="flex items-center justify-between rounded-md bg-ink-800 px-2 py-1 font-mono text-[11px] text-kora-100">
+            {x.user}
+            <button onClick={() => commit(() => (r.users = r.users.filter((y) => y !== x)), "Compte supprimé.")} aria-label="Supprimer" className="text-kora-200/60 hover:text-ko">
+              <Trash2 size={12} />
+            </button>
+          </div>
+        ))}
+        <div className="mt-1 space-y-1.5">
+          <Field label="Utilisateur" value={u.user} onChange={(v) => setU({ ...u, user: v.trim() })} />
+          <Field label="Mot de passe" type="password" value={u.pass} onChange={(v) => setU({ ...u, pass: v })} />
+          <button
+            className={btnGhost}
+            onClick={() => {
+              if (!u.user || !u.pass || r.users.some((x) => x.user === u.user)) return setMsg("Utilisateur vide ou déjà existant.");
+              commit(() => (r.users = [...r.users, u]), "Compte ajouté ✓");
+              setU({ user: "", pass: "" });
+            }}
+          >
+            Ajouter le compte
+          </button>
+        </div>
+      </div>
+      {msg && <p className="text-xs text-kora-200">{msg}</p>}
+      <div>
+        <p className="mb-1 text-xs font-semibold text-kora-100">Journal</p>
+        {log.length ? (
+          log.map((l, i) => (
+            <p key={i} className={`font-mono text-[10.5px] ${l.startsWith("Access-Accept") ? "text-ok" : "text-amber-200"}`}>
+              {l}
+            </p>
+          ))
+        ) : (
+          <p className="text-[11px] text-kora-200/50">Aucune requête reçue.</p>
+        )}
+      </div>
     </div>
   );
 }

@@ -20,7 +20,7 @@ function lab(opt43 = true) {
   const s1 = net.addDevice("switch", 0, 100);
   const wlc = net.addDevice("wlc", 200, 100);
   const ap = net.addDevice("ap", 0, 300);
-  const srv = net.addDevice("pc", 300, 300);
+  const srv = net.addDevice("pc", 300, 300, "SERVER");
   const laptop = net.addDevice("pc", 100, 450, "LAPTOP");
   net.connect(r1.id, s1.id, undefined, "GigabitEthernet0/1");
   net.connect(wlc.id, s1.id, undefined, "GigabitEthernet0/2");
@@ -121,5 +121,29 @@ describe("Wi-Fi : contrôleur, point d'accès et clients", () => {
     const { net, srv } = lab();
     expect(net.tcpConnect(srv, "192.168.1.5", 443)).toBe("open");
     expect(net.tcpConnect(srv, "192.168.1.5", 23)).toBe("refused");
+  });
+
+  it("WPA2 Entreprise : authentification par un serveur RADIUS", () => {
+    const { net, wlc, srv, laptop } = lab();
+    expect(srv.hostname).toBe("Server1");
+    wlc.wlcCfg!.wlans.push({ id: 2, profile: "Corp", ssid: "Kora-Corp", enabled: true, iface: "employes", security: "wpa2-ent", aaa: "radius" });
+    const status = () => (net.clearDynamic(), net.wifiStatus(laptop));
+    laptop.wifi = { ssid: "Kora-Corp", user: "awa", pass: "Pass1234" };
+    expect(status()).toMatchObject({ error: expect.stringContaining("Aucun serveur RADIUS") });
+    wlc.wlcCfg!.radius = [{ ip: "192.168.1.50", secret: "kora-secret" }];
+    expect(status()).toMatchObject({ error: expect.stringContaining("pas démarré") });
+    srv.radius!.enabled = true;
+    expect(status()).toMatchObject({ error: expect.stringContaining("192.168.1.5 n'est pas déclarée") });
+    srv.radius!.clients.push({ name: "WLC1", ip: "192.168.1.5", secret: "autre" });
+    expect(status()).toMatchObject({ error: expect.stringContaining("secret partagé") });
+    srv.radius!.clients[0].secret = "kora-secret";
+    expect(status()).toMatchObject({ error: expect.stringContaining("Access-Reject") });
+    srv.radius!.users.push({ user: "awa", pass: "Pass1234" });
+    expect(status()).toMatchObject({ vlan: 20 });
+    expect(net.radiusLogOf(srv).at(-1)).toContain("Access-Accept · awa");
+    expect(net.dhcpRequest(laptop, "Wireless0")?.op).toBe("ack");
+    // serveur injoignable
+    srv.ifaces[0].adminUp = false;
+    expect(status()).toMatchObject({ error: expect.stringContaining("ne répond pas") });
   });
 });
