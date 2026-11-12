@@ -17,7 +17,20 @@ export function blankCheck(type: Check["type"], device: string): Check {
     case "route":
       return { type, device, network: "", mask: "" };
     case "ping":
+    case "noping":
       return { type, device, to: "" };
+    case "vlan":
+      return { type, device, vlan: 10, name: "" };
+    case "access":
+      return { type, device, iface: "", vlan: 10 };
+    case "trunk":
+      return { type, device, iface: "" };
+    case "dhcp":
+      return { type, device, network: "", mask: "" };
+    case "tcp":
+      return { type, device, to: "", port: 80, open: true };
+    case "show":
+      return { type, device, command: "show running-config", pattern: "", text: "" };
   }
 }
 
@@ -51,7 +64,7 @@ export function CheckEditor({ checks, devices, onChange }: { checks: Check[]; de
                   </option>
                 ))}
               </select>
-              {(c.type === "ip" || c.type === "up") && (
+              {(c.type === "ip" || c.type === "up" || c.type === "access" || c.type === "trunk") && (
                 <select value={c.iface} onChange={(e) => setAt(i, { ...c, iface: e.target.value })} className={input}>
                   <option value="">Interface…</option>
                   {ifaces.map((n) => (
@@ -68,13 +81,34 @@ export function CheckEditor({ checks, devices, onChange }: { checks: Check[]; de
               {(c.type === "hostname" || c.type === "gateway") && (
                 <input value={c.value} onChange={(e) => setAt(i, { ...c, value: e.target.value.trim() })} placeholder={c.type === "hostname" ? "Nom attendu" : "IP de la passerelle"} className={`${input} w-44 font-mono`} />
               )}
-              {c.type === "route" && (
+              {(c.type === "vlan" || c.type === "access") && (
+                <input type="number" value={c.vlan} onChange={(e) => setAt(i, { ...c, vlan: Number(e.target.value) })} placeholder="VLAN" className={`${input} w-24 font-mono`} />
+              )}
+              {c.type === "vlan" && <input value={c.name ?? ""} onChange={(e) => setAt(i, { ...c, name: e.target.value.trim() })} placeholder="Nom (facultatif)" className={`${input} w-40 font-mono`} />}
+              {c.type === "show" && (
+                <>
+                  <input value={c.command} onChange={(e) => setAt(i, { ...c, command: e.target.value })} placeholder="show …" className={`${input} w-52 font-mono`} />
+                  <input value={c.pattern} onChange={(e) => setAt(i, { ...c, pattern: e.target.value })} placeholder="Texte attendu (expression régulière)" className={`${input} w-60 font-mono`} />
+                  <input value={c.text} onChange={(e) => setAt(i, { ...c, text: e.target.value })} placeholder="Ce que voit l'étudiant" className={`${input} min-w-56 flex-1`} />
+                </>
+              )}
+              {(c.type === "route" || c.type === "dhcp") && (
                 <>
                   <input value={c.network} onChange={(e) => setAt(i, { ...c, network: e.target.value.trim() })} placeholder="Réseau" className={`${input} w-36 font-mono`} />
                   <input value={c.mask} onChange={(e) => setAt(i, { ...c, mask: e.target.value.trim() })} placeholder="Masque" className={`${input} w-40 font-mono`} />
                 </>
               )}
-              {c.type === "ping" && <input value={c.to} onChange={(e) => setAt(i, { ...c, to: e.target.value.trim() })} placeholder="IP à pinguer" className={`${input} w-40 font-mono`} />}
+              {c.type === "tcp" && (
+                <>
+                  <input value={c.to} onChange={(e) => setAt(i, { ...c, to: e.target.value.trim() })} placeholder="IP du serveur" className={`${input} w-40 font-mono`} />
+                  <input type="number" value={c.port} onChange={(e) => setAt(i, { ...c, port: Number(e.target.value) })} placeholder="Port" className={`${input} w-24 font-mono`} />
+                  <select value={c.open ? "1" : "0"} onChange={(e) => setAt(i, { ...c, open: e.target.value === "1" })} className={input}>
+                    <option value="1">autorisée</option>
+                    <option value="0">bloquée</option>
+                  </select>
+                </>
+              )}
+              {(c.type === "ping" || c.type === "noping") && <input value={c.to} onChange={(e) => setAt(i, { ...c, to: e.target.value.trim() })} placeholder="IP à pinguer" className={`${input} w-40 font-mono`} />}
               <button onClick={() => onChange(checks.filter((_, k) => k !== i))} title="Supprimer le critère" className="ml-auto rounded-lg p-2 text-ko/80 hover:bg-white/8 hover:text-ko">
                 <Trash2 size={15} />
               </button>

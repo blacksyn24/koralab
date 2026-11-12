@@ -22,6 +22,7 @@ import { CommandsEditor, StepsEditor } from "@/components/admin/StepsEditor";
 import type { Check } from "@/engine/checks";
 import { Network, shortIf } from "@/engine/network";
 import { getLab, listLabs, type LabMeta } from "@/lib/labs";
+import { CATEGORIES } from "@/lib/catalog/base";
 import { LEVELS, getTp, saveTp, type AddrRow, type Tp } from "@/lib/tps";
 
 type Form = Omit<Tp, "id" | "updatedAt">;
@@ -42,6 +43,7 @@ const EMPTY: Form = {
   tips: "",
   steps: [],
   commands: [],
+  category: "",
 };
 
 /** Réduit une image (WebP, 1600 px max) pour qu'elle tienne dans le document du TP. */
@@ -373,6 +375,15 @@ function Editor() {
             />
           </label>
         </div>
+        <label className="block text-sm text-kora-200/80">
+          Catégorie
+          <select value={form.category} onChange={(e) => set({ category: e.target.value })} className={`${input} mt-1`}>
+            <option value="">Autres</option>
+            {CATEGORIES.map((c) => (
+              <option key={c}>{c}</option>
+            ))}
+          </select>
+        </label>
         <label className="block text-sm text-kora-200/80">
           Résumé (une phrase, affichée dans le catalogue)
           <input

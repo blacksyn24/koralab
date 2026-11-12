@@ -6,6 +6,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { Lab, starter, type TpMode } from "@/components/lab/Lab";
 import type { Check } from "@/engine/checks";
+import { catalogTp } from "@/lib/catalog";
 import { getTp, recordProgress } from "@/lib/tps";
 
 /** TP de démonstration, sans base de données : la topologie du TP 01 Kora Logistique. */
@@ -78,6 +79,8 @@ function TpLoader() {
   useEffect(() => {
     if (!id) return setError("Aucun TP choisi.");
     if (id === "demo") return setTp(demoTp());
+    const builtin = catalogTp(id);
+    if (builtin) return setTp({ id: builtin.id, title: builtin.title, statement: builtin.statement, checks: builtin.checks, initial: builtin.topology, brief: builtin.brief });
     getTp(id)
       .then((t) => {
         if (!t || !t.topology) return setError("Ce TP n'existe pas ou n'est pas encore publié.");

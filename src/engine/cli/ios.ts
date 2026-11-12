@@ -943,6 +943,9 @@ export class IosCli {
   /** « 10.0.0.2 », « g0/0/1 », « g0/0/1 10.0.0.2 », avec une distance administrative facultative à la fin. */
   private parseRouteTarget(rest: string): { nextHop?: string; iface?: string; ad?: number } | null {
     const t = rest.trim().split(/\s+/);
+    // « loopback 0 », « g 0/0/1 » : le dernier nombre fait partie du nom d'interface, pas de la distance
+    const whole = resolveIfaceName(this.dev, t.join(""));
+    if (whole && !isIp(t[0])) return { iface: whole };
     let ad: number | undefined;
     if (t.length > 1 && /^\d+$/.test(t.at(-1)!)) ad = Number(t.pop());
     if (ad !== undefined && (ad < 1 || ad > 255)) return null;
@@ -1622,7 +1625,7 @@ export class IosCli {
     if (!c) return INVALID;
     const t = rest.trim().split(/\s+/);
     let ad: number | undefined;
-    if (t.length > 1 && /^\d+$/.test(t.at(-1)!)) ad = Number(t.pop());
+    if (t.length > 1 && /^\d+$/.test(t.at(-1)!) && !resolveIfaceName(this.dev, t.join(""))) ad = Number(t.pop());
     const nh = isIp6(t.at(-1) ?? "") ? expand6(t.pop()!)! : undefined;
     const iface = t.length ? resolveIfaceName(this.dev, t.join("")) ?? undefined : undefined;
     if (t.length && !iface) return INVALID;

@@ -1572,13 +1572,17 @@ export class Network {
     this.ensureWifi();
     const iface = this.findIface(dev, ifaceName);
     if (!iface || !this.isUp(dev, iface)) return null;
-    const xid = this.icmpId++;
     iface.ip = iface.mask = undefined;
     this.arp.delete(dev.id); // seules les entrées du client sont oubliées
-    this.emitL3(dev, iface.name, { src: iface.mac, dst: BROADCAST_MAC, type: "ipv4", ip: { src: "0.0.0.0", dst: IP_BROADCAST, ttl: 64, proto: "udp", sport: 68, dport: 67, dhcp: { op: "discover", xid, chaddr: iface.mac } } });
-    this.run();
-    const ack = this.dhcpInbox.get(`${dev.id}|${xid}`);
-    this.dhcpInbox.delete(`${dev.id}|${xid}`);
+    // Comme un vrai client, on renvoie la demande si la première se perd (résolution ARP d'un relais, par exemple)
+    let ack: DhcpMsg | undefined;
+    for (let attempt = 0; attempt < 3 && !ack; attempt++) {
+      const xid = this.icmpId++;
+      this.emitL3(dev, iface.name, { src: iface.mac, dst: BROADCAST_MAC, type: "ipv4", ip: { src: "0.0.0.0", dst: IP_BROADCAST, ttl: 64, proto: "udp", sport: 68, dport: 67, dhcp: { op: "discover", xid, chaddr: iface.mac } } });
+      this.run();
+      ack = this.dhcpInbox.get(`${dev.id}|${xid}`);
+      this.dhcpInbox.delete(`${dev.id}|${xid}`);
+    }
     if (!ack || ack.op !== "ack" || !ack.yiaddr) return ack ?? null;
     iface.ip = ack.yiaddr;
     iface.mask = ack.mask;

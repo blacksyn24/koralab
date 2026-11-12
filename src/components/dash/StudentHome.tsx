@@ -8,6 +8,7 @@ import { Card, CardTitle, Gauge, Pill, PillLink, StatCard, WeekBars, lastWeek } 
 import { Countdown } from "@/components/hackathon/Countdown";
 import { listPublishedHackathons, myHackathons, statusOf, STATUS_LABEL, type Hackathon, type MyHackathon } from "@/lib/hackathons";
 import { listLabs, type LabMeta } from "@/lib/labs";
+import { catalogAsTps } from "@/lib/catalog";
 import { getProgress, listPublishedTps, type Progress, type Tp } from "@/lib/tps";
 
 export type StudentData = { labs: LabMeta[]; tps: Tp[]; progress: Progress; hks: Hackathon[]; mine: MyHackathon[] };
@@ -29,7 +30,7 @@ export default function StudentHome({ demo }: { demo?: StudentData }) {
   useEffect(() => {
     if (!user || demo) return;
     (async () => {
-      const [labs, tps, progress, hks] = await Promise.all([listLabs(user.uid), listPublishedTps(), getProgress(user.uid), listPublishedHackathons().catch(() => [])]);
+      const [labs, tps, progress, hks] = await Promise.all([listLabs(user.uid), listPublishedTps().then((l) => [...catalogAsTps(), ...l]).catch(() => catalogAsTps()), getProgress(user.uid), listPublishedHackathons().catch(() => [])]);
       const mine = await myHackathons(user.uid, hks).catch(() => []);
       setData({ labs, tps, progress, hks, mine });
     })().catch((e) => {

@@ -33,6 +33,8 @@ export type Tp = TpBrief & {
   id: string;
   title: string;
   level: string;
+  /** Catégorie (Commutation, Routage…) pour le classement du catalogue */
+  category: string;
   summary: string;
   statement: string;
   /** Topologie de départ (JSON d'un lab) */
@@ -50,6 +52,7 @@ function toTp(id: string, d: Record<string, unknown>): Tp {
     id,
     title: (d.title as string) ?? "",
     level: (d.level as string) ?? "Autre",
+    category: (d.category as string) ?? "",
     summary: (d.summary as string) ?? "",
     statement: (d.statement as string) ?? "",
     image: (d.image as string) ?? "",
