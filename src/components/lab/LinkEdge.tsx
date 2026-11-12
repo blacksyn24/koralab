@@ -2,7 +2,8 @@
 
 import { BaseEdge, EdgeLabelRenderer, getStraightPath, type EdgeProps } from "@xyflow/react";
 
-export type LinkEdgeData = { aLabel: string; bLabel: string; aUp: boolean; bUp: boolean };
+/** aT / bT : position de chaque étiquette le long du câble (0 = côté source, 1 = côté cible), calculée pour éviter les chevauchements. */
+export type LinkEdgeData = { aLabel: string; bLabel: string; aUp: boolean; bUp: boolean; aT?: number; bT?: number };
 
 /** Câble entre deux équipements, avec le nom des ports et un voyant à chaque bout (vert = up, rouge = down). */
 export function LinkEdge({ id, sourceX, sourceY, targetX, targetY, data, selected }: EdgeProps) {
@@ -10,8 +11,8 @@ export function LinkEdge({ id, sourceX, sourceY, targetX, targetY, data, selecte
   const [path] = getStraightPath({ sourceX, sourceY, targetX, targetY });
   const both = d.aUp && d.bUp;
   const at = (t: number) => ({ x: sourceX + (targetX - sourceX) * t, y: sourceY + (targetY - sourceY) * t });
-  const a = at(0.34);
-  const b = at(0.66);
+  const a = at(d.aT ?? 0.34);
+  const b = at(d.bT ?? 0.66);
   const label = (p: { x: number; y: number }, text: string, up: boolean) => (
     <div
       style={{ transform: `translate(-50%, -50%) translate(${p.x}px, ${p.y}px)` }}

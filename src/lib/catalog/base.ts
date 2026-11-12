@@ -2,10 +2,11 @@
 // et sa solution est vérifiée par les tests (src/lib/catalog/catalog.test.ts).
 
 import type { Check } from "@/engine/checks";
+import { IosCli } from "@/engine/cli/ios";
 import { Network, type Device, type DeviceKind } from "@/engine/network";
 import type { AddrRow, TpBrief, TpCommand, TpStep } from "@/lib/tps";
 
-export const CATEGORIES = ["Bases et adressage", "Sécurité des équipements", "IPv6", "Commutation", "Routage", "Services IP", "Haute disponibilité", "Wi-Fi", "Sécurité réseau", "Supervision"] as const;
+export const CATEGORIES = ["Dépannage", "Bases et adressage", "Sécurité des équipements", "IPv6", "Commutation", "Routage", "Services IP", "Haute disponibilité", "Wi-Fi", "Sécurité réseau", "Supervision"] as const;
 export type Category = (typeof CATEGORIES)[number];
 export type Level = "CCNA 1" | "CCNA 2" | "CCNA 3";
 export type Difficulty = "Débutant" | "Intermédiaire" | "Avancé";
@@ -114,3 +115,14 @@ export const ck = {
 
 export const M24 = "255.255.255.0";
 export const M30 = "255.255.255.252";
+
+/** Configure un équipement à la construction du TP (topologie livrée déjà configurée, par exemple pour le dépannage). */
+export function conf(net: Network, dev: Device, text: string) {
+  const cli = new IosCli(net, dev);
+  for (const line of ["enable", "configure terminal", ...text.trim().split("\n"), "end"]) {
+    const l = line.trim();
+    if (!l) continue;
+    const out = cli.exec(l);
+    if (/% (Invalid|Incomplete|Ambiguous)/.test(out)) throw new Error(`${dev.hostname} : « ${l} » refusée à la construction du TP`);
+  }
+}

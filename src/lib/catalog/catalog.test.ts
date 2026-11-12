@@ -502,15 +502,48 @@ snmp-server community Akp@Sup-ro ro`),
   ],
 };
 
-describe("Catalogue des 20 TP guidés", () => {
+Object.assign(SOLUTIONS, {
+  "depannage-01-connectivite": (net, by) => {
+    const e = ios(net, by("R1"), "interface g0/0/1\nno shutdown");
+    setPc(by("PC-DIR2"), "192.168.10.12", "255.255.255.0", "192.168.10.1");
+    setPc(by("PC-COMPTA"), "192.168.20.10", "255.255.255.0", "192.168.20.1");
+    return e;
+  },
+  "depannage-02-vlan-trunk": (net, by) => [
+    ...ios(net, by("S1"), "interface g0/1\nswitchport mode trunk"),
+    ...ios(net, by("S2"), "vlan 20\nname SECRETARIAT\nexit\ninterface f0/2\nswitchport access vlan 20"),
+  ],
+  "depannage-03-inter-vlan": (net, by) => {
+    const e = [...ios(net, by("S1"), "interface g0/1\nswitchport mode trunk"), ...ios(net, by("R1"), "interface g0/0/1.20\nencapsulation dot1Q 20")];
+    setPc(by("PC-ETUD"), "192.168.20.10", "255.255.255.0", "192.168.20.1");
+    return e;
+  },
+  "depannage-04-dhcp": (net, by) => {
+    const e = [
+      ...ios(net, by("R2"), "interface g0/0/0\nip helper-address 10.1.1.1"),
+      ...ios(net, by("R1"), "ip route 192.168.22.0 255.255.255.0 10.1.1.2\nip dhcp pool BAT-B\ndefault-router 192.168.22.1"),
+    ];
+    pc(net, by("PC-B"), "ipconfig /renew");
+    return e;
+  },
+  "depannage-05-ospf": (net, by) => [
+    ...ios(net, by("R2"), "router ospf 1\nno passive-interface g0/0/1"),
+    ...ios(net, by("R3"), "router ospf 1\nno network 10.0.23.0 0.0.0.0 area 0\nnetwork 10.0.23.0 0.0.0.3 area 0\nnetwork 172.16.3.0 0.0.0.255 area 0"),
+  ],
+  "depannage-06-nat-acl": (net, by) =>
+    ios(net, by("R1"), "interface g0/0/0\nip nat inside\nno ip access-group SECURITE in\ninterface g0/0/2\nip nat outside\nexit\nno access-list 1\naccess-list 1 permit 192.168.1.0 0.0.0.255"),
+} satisfies Record<string, Sol>);
+
+describe("Catalogue des TP guidés", () => {
   const tps = catalog();
 
-  it("contient 20 TP répartis sur le CCNA 1, 2 et 3, avec des identifiants uniques", () => {
-    expect(tps).toHaveLength(20);
-    expect(new Set(tps.map((t) => t.id)).size).toBe(20);
+  it("contient 20 TP guidés et 6 TP de dépannage, avec des identifiants uniques", () => {
+    expect(tps).toHaveLength(26);
+    expect(tps.filter((t) => t.category === "Dépannage")).toHaveLength(6);
+    expect(new Set(tps.map((t) => t.id)).size).toBe(26);
     for (const l of ["CCNA 1", "CCNA 2", "CCNA 3"]) expect(tps.some((t) => t.level === l)).toBe(true);
     for (const t of tps) {
-      expect(t.checks.length, t.id).toBeGreaterThanOrEqual(6);
+      expect(t.checks.length, t.id).toBeGreaterThanOrEqual(t.category === "Dépannage" ? 5 : 6);
       expect(t.brief.steps!.every((s) => s.checks.length > 0), t.id).toBe(true);
     }
   });

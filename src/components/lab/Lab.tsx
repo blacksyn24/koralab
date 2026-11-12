@@ -13,7 +13,7 @@ import {
   type Node,
   type NodeChange,
 } from "@xyflow/react";
-import { BookOpen, Boxes, Cable, CheckCircle2, CircleHelp, Cloud, CloudCheck, CloudOff, Database, Download, FilePlus2, FlaskConical, Globe, Laptop, Layers, Loader2, Lock, Monitor, MousePointer2, Network as SwitchIcon, RotateCcw, Router, Server, Smartphone, SquareTerminal, Trash2, Upload, Wifi, X, XCircle } from "lucide-react";
+import { BookOpen, Boxes, Cable, CheckCircle2, CircleHelp, Cloud, CloudCheck, CloudOff, Database, Download, FilePlus2, Globe, Laptop, Layers, Loader2, Lock, Monitor, MousePointer2, Network as SwitchIcon, RotateCcw, Router, Server, Smartphone, SquareTerminal, Trash2, Upload, Wifi, X, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -40,23 +40,6 @@ const STORAGE = "koralab:lab:v1";
 const nodeTypes = { device: DeviceNode };
 const edgeTypes = { link: LinkEdge, wifi: WifiEdge };
 
-/** Topologie de départ du TP 01 (non configurée) : un routeur, deux switchs, deux PC. */
-export function starter(): Network {
-  const net = new Network();
-  const r1 = net.addDevice("router", 330, 40);
-  const s1 = net.addDevice("switch", 120, 230);
-  const s2 = net.addDevice("switch", 540, 230);
-  const pc1 = net.addDevice("pc", 40, 430);
-  const pc2 = net.addDevice("pc", 200, 430);
-  const pc3 = net.addDevice("pc", 460, 430);
-  const pc4 = net.addDevice("pc", 620, 430);
-  net.connect(r1.id, s1.id);
-  net.connect(r1.id, s2.id);
-  for (const pc of [pc1, pc2]) net.connect(s1.id, pc.id);
-  for (const pc of [pc3, pc4]) net.connect(s2.id, pc.id);
-  return net;
-}
-
 function load(): Network {
   try {
     const raw = localStorage.getItem(STORAGE);
@@ -64,7 +47,7 @@ function load(): Network {
   } catch {
     /* lab corrompu ou stockage indisponible : on repart d'un lab neuf */
   }
-  return starter();
+  return new Network();
 }
 
 /** Lab enregistré en ligne (ouvert depuis « Mes labs »). */
@@ -338,6 +321,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
         data: { aLabel: shortIf(l.a.iface), bLabel: shortIf(l.b.iface), aUp: net.isUp(a, ai), bUp: net.isUp(b, bi) } satisfies LinkEdgeData,
       };
     });
+    placeLabels(net, cables);
     const radio: Edge[] = net.devices.flatMap((d) => {
       const a = isWireless(d) ? net.assocOf(d) : null;
       return a ? [{ id: `wifi-${d.id}`, source: a.ap.id, target: d.id, type: "wifi", deletable: false, selectable: false, focusable: false }] : [];
@@ -515,7 +499,6 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
           ) : (
             <>
               <TopButton icon={FilePlus2} label="Nouveau" onClick={async () => (await askConfirm("Nouveau lab ?", { message: "Le lab actuel sera effacé et vous repartirez de zéro.", ok: "Effacer et recommencer", danger: true })) && resetLab(new Network())} />
-              <TopButton icon={FlaskConical} label="TP 01" title="Charger la topologie de départ du TP 01" onClick={async () => (await askConfirm("Charger le TP 01 ?", { message: "Le lab actuel sera remplacé par la topologie de départ du TP 01.", ok: "Charger" })) && resetLab(starter())} />
             </>
           )}
           <TopButton icon={Download} label="Exporter" onClick={exportLab} />
@@ -650,7 +633,7 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
               <div className="pointer-events-none absolute inset-0 grid place-items-center text-center text-kora-200/70">
                 <div>
                   <p className="text-lg font-semibold text-white">Votre labo est vide</p>
-                  <p className="mt-1 text-sm">Ajoutez un routeur, un switch ou un PC avec la barre de gauche, ou chargez le TP 01.</p>
+                  <p className="mt-1 text-sm">Ajoutez des équipements avec le bouton « Équipements » à gauche, ou suivez un TP guidé.</p>
                 </div>
               </div>
             )}
@@ -740,6 +723,57 @@ function LabInner({ cloud, tp }: { cloud?: CloudLab; tp?: TpMode }) {
       {help && <HelpDialog onClose={() => setHelp(false)} />}
     </div>
   );
+}
+
+
+/** Taille approximative d'une étiquette de port (police mono 10 px). */
+const labelSize = (text: string) => ({ w: text.length * 6.2 + 24, h: 18 });
+
+/**
+ * Place les étiquettes des ports sans chevauchement : chacune démarre juste à la sortie de son équipement,
+ * puis avance le long du câble tant qu'elle touche un équipement ou une étiquette déjà placée.
+ */
+function placeLabels(net: Network, edges: Edge[]) {
+  // Boîte occupée par chaque équipement (icône 64 px + nom + modèle) ; les câbles partent du centre de l'icône
+  const boxes = net.devices.map((d) => ({ id: d.id, x1: d.x + 6, y1: d.y - 2, x2: d.x + 106, y2: d.y + 104 }));
+  const anchor = (id: string) => {
+    const d = net.getDevice(id)!;
+    return { x: d.x + 56, y: d.y + 32 };
+  };
+  const placed: { x1: number; y1: number; x2: number; y2: number }[] = [];
+  const hit = (r: { x1: number; y1: number; x2: number; y2: number }) =>
+    boxes.some((b) => r.x1 < b.x2 && r.x2 > b.x1 && r.y1 < b.y2 && r.y2 > b.y1) || placed.some((b) => r.x1 < b.x2 + 3 && r.x2 > b.x1 - 3 && r.y1 < b.y2 + 2 && r.y2 > b.y1 - 2);
+  // Les câbles courts d'abord : ce sont eux qui ont le moins de place
+  const order = [...edges].sort((e1, e2) => {
+    const len = (e: Edge) => Math.hypot(anchor(e.source).x - anchor(e.target).x, anchor(e.source).y - anchor(e.target).y);
+    return len(e1) - len(e2);
+  });
+  for (const e of order) {
+    const data = e.data as LinkEdgeData;
+    const s = anchor(e.source);
+    const t = anchor(e.target);
+    const len = Math.hypot(t.x - s.x, t.y - s.y) || 1;
+    const put = (fromSource: boolean, text: string) => {
+      const { w, h } = labelSize(text);
+      let best = fromSource ? 0.3 : 0.7;
+      for (let k = 0; k <= 60; k++) {
+        const dist = 8 + k * 6;
+        const f = Math.min(0.48, dist / len);
+        const tt = fromSource ? f : 1 - f;
+        const x = s.x + (t.x - s.x) * tt;
+        const y = s.y + (t.y - s.y) * tt;
+        const r = { x1: x - w / 2, y1: y - h / 2, x2: x + w / 2, y2: y + h / 2 };
+        best = tt;
+        if (!hit(r) || f >= 0.48) {
+          placed.push(r);
+          break;
+        }
+      }
+      return best;
+    };
+    data.aT = put(true, data.aLabel);
+    data.bT = put(false, data.bLabel);
+  }
 }
 
 function TopButton({ icon: Icon, label, title, onClick }: { icon: typeof X; label: string; title?: string; onClick: () => void }) {

@@ -229,7 +229,7 @@ export default function Home() {
             Ouvrir le labo <ArrowRight size={18} />
           </Link>
           <Link
-            href="/tp?id=demo"
+            href="/tp?id=ccna1-01-configuration-de-base"
             className="inline-flex items-center gap-2 rounded-full px-6 py-3 font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/5"
           >
             <BookOpenCheck size={18} /> Essayer un TP guidé
@@ -322,6 +322,7 @@ export default function Home() {
             {[
               "Étapes avec les valeurs à taper surlignées",
               "Correction sur l'état réel du réseau, pas sur du texte",
+              "6 TP de dépannage : trouvez et réparez les pannes d'un réseau livré cassé",
               "Résumé des commandes utiles pour chaque TP",
               "Progression enregistrée dans votre compte",
             ].map((t) => (

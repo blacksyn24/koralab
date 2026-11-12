@@ -532,7 +532,7 @@ function Editor() {
             onChange={(e) => set({ context: e.target.value })}
             rows={3}
             className={`${input} mt-1`}
-            placeholder="Kora Logistique (entreprise fictive) ouvre un nouveau site à Cotonou…"
+            placeholder="Une PME fictive ouvre un nouveau site à Cotonou…"
           />
         </label>
         <label className="block text-sm text-kora-200/80">

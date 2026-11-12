@@ -74,7 +74,7 @@ export default function TpsPage() {
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-kora-300">Programme CCNA 1 · 2 · 3</p>
           <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">TP guidés</h1>
           <p className="mt-2 max-w-2xl text-kora-200/80">
-            {official.length} TP complets, étape par étape, sur des scénarios d&apos;entreprises fictives. Chaque étape est vérifiée automatiquement sur votre réseau.
+            {official.filter((t) => t.category !== "Dépannage").length} TP guidés et {official.filter((t) => t.category === "Dépannage").length} TP de dépannage, sur des scénarios d&apos;entreprises fictives. Chaque étape est vérifiée automatiquement sur votre réseau.
             {!user && " Connectez-vous pour garder votre progression."}
           </p>
           <div className="mt-6 flex flex-wrap gap-3 text-sm">

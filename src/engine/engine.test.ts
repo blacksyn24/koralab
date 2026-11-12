@@ -8,7 +8,7 @@ function type(cli: IosCli | PcCli, ...lines: string[]) {
   return lines.map((l) => cli.exec(l));
 }
 
-/** Reproduit le TP 01 Kora Logistique (routeur + 2 LAN). */
+/** Un routeur et deux LAN. */
 function kora() {
   const net = new Network();
   const r1 = net.addDevice("router");
